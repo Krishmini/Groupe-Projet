@@ -67,7 +67,7 @@ async function callMistral(messages) {
 
 function formatContext(context) {
   let formatted = context
-    .map((c, i) => `[Source ${i + 1} - ${c.source}]\n${c.text}`)
+    .map((c, i) => `[Source ${i + 1} - ${c.source || 'inconnu'}]\n${c.text}`)
     .join('\n\n---\n\n');
 
   if (formatted.length > MAX_CONTEXT_CHARS) {
@@ -75,6 +75,51 @@ function formatContext(context) {
   }
 
   return formatted;
+}
+
+// ─── Citations structurées (Phase 7) ─────────────────────────────────────────
+
+/**
+ * Construit le tableau sources dédupliqué par fichier, meilleur score par fichier.
+ * Gère les chunks sans metadata.source (fallback "Source inconnue").
+ *
+ * @param {Array<{ source?: string, score: number }>} chunks
+ * @returns {Array<{ index: number, file: string, relevance: number }>}
+ */
+export function formatSourceCitations(chunks) {
+  const byFile = new Map();
+
+  for (const c of chunks) {
+    const file = c.source || 'Source inconnue';
+    const existing = byFile.get(file);
+    if (!existing || c.score > existing.score) {
+      byFile.set(file, { file, score: c.score });
+    }
+  }
+
+  // Trier par score décroissant, assigner index 1-based
+  return [...byFile.values()]
+    .sort((a, b) => b.score - a.score)
+    .map((s, i) => ({
+      index:     i + 1,
+      file:      s.file,
+      relevance: s.score
+    }));
+}
+
+/**
+ * Détecte les [Source N] citées dans la réponse qui n'existent pas dans les sources passées.
+ *
+ * @param {string} answer — réponse du LLM
+ * @param {number} maxSourceIndex — nombre de sources réellement passées au LLM
+ * @returns {number[]} — indices orphelins (ex: [7] si LLM cite [Source 7] mais on n'a passé que 5)
+ */
+export function detectOrphanCitations(answer, maxSourceIndex) {
+  const cited = [...answer.matchAll(/\[Source\s+(\d+)\]/gi)]
+    .map(m => parseInt(m[1], 10));
+
+  const unique = [...new Set(cited)];
+  return unique.filter(n => n < 1 || n > maxSourceIndex);
 }
 
 // ─── generateCompletion (Phase 5) ─────────────
@@ -152,7 +197,13 @@ export async function ragQuery(question, options = {}) {
   }
 
   // ─── Résultat ────────
-  const sources = [...new Set(chunks.map(c => c.source))];
+  // Phase 7 : sources structurées + détection citations orphelines
+  const sources = formatSourceCitations(chunks);
+  const orphanCitations = detectOrphanCitations(answer, chunks.length);
+
+  if (verbose && orphanCitations.length > 0) {
+    console.warn(`[citations] ⚠️ Citations orphelines détectées : [Source ${orphanCitations.join('], [Source ')}]`);
+  }
 
   const metrics = {
     topScore,
@@ -161,16 +212,17 @@ export async function ragQuery(question, options = {}) {
     generationMs,
     promptTokens,
     completionTokens,
-    costUSD
+    costUSD,
+    orphanCitations
   };
 
-  return { answer, sources, chunks, metrics };
+  return { answer, sources, chunksUsed: chunks.length, chunks, metrics };
 }
 
 // ─── ask — wrapper rétrocompatible pour eval.js ──────
 
 export async function ask(rawQuestion) {
-  const { answer, sources, chunks, metrics } = await ragQuery(rawQuestion);
+  const { answer, sources, chunksUsed, chunks, metrics } = await ragQuery(rawQuestion);
   const contextFound = chunks.length > 0;
-  return { question: rawQuestion, answer, contextFound, chunks, sources, metrics };
+  return { question: rawQuestion, answer, contextFound, chunks, sources, chunksUsed, metrics };
 }
