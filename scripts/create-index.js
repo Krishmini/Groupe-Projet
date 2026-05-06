@@ -20,23 +20,17 @@ const __dirname  = dirname(fileURLToPath(import.meta.url));
 const CORPUS_PATH = resolve(__dirname, '..', CORPUS_DIR.replace('./', ''));
 
 const pinecone = new Pinecone({ apiKey: PINECONE_API_KEY });
-
-// Extensions de fichiers supportées (Option C : txt, md, json)
 const SUPPORTED_EXTENSIONS = ['.txt', '.md', '.json'];
 
-// ─── Paramètres de chunking ─────────────────────────────────────────────────
-// Ajustables sans toucher au reste du code.
+// ─── Paramètres de chunking ──────
 export const CONFIG = {
-  chunkSize:       400,  // mots par chunk (recommandé : 300-500)
+  chunkSize:       400,  // mots par chunk 
   overlap:          50,  // mots de chevauchement (~12%)
   batchSize:        50,  // vecteurs par upsert Pinecone
   embedConcurrency:  5   // appels d'embedding en parallèle max
 };
 
-// ─── Chunking avec overlap ───────────────────────────────────────────────────
-// Découpe `text` en chunks de `size` mots avec `overlap` mots de recouvrement.
-// Cas limites gérés : texte vide → [], texte < size → [texte entier],
-// overlap >= size → erreur explicite.
+// ─── Chunking avec overlap ──────
 export function chunkWithOverlap(text, size = CONFIG.chunkSize, overlap = CONFIG.overlap) {
   if (overlap >= size) throw new Error(`overlap (${overlap}) doit être < chunkSize (${size})`);
 
@@ -52,8 +46,8 @@ export function chunkWithOverlap(text, size = CONFIG.chunkSize, overlap = CONFIG
   return chunks;
 }
 
-// ─── Lecture du corpus (récursive, Option C) ─────────────────────────────────
-// Parcourt `dir` et tous ses sous-dossiers, retourne les fichiers supportés.
+// ─── Lecture du corpus  ─────────────────────────────────
+// Lit tous les fichiers supportés de dir, retourne [{ filename, text }]
 export function loadCorpus(dir) {
   const results = [];
   for (const entry of readdirSync(dir)) {
@@ -61,14 +55,17 @@ export function loadCorpus(dir) {
     if (statSync(fullPath).isDirectory()) {
       results.push(...loadCorpus(fullPath));
     } else if (SUPPORTED_EXTENSIONS.includes(extname(entry).toLowerCase())) {
-      results.push(fullPath);
+      results.push({
+        filename: basename(fullPath),
+        text:     readFileSync(fullPath, 'utf-8')
+      });
     }
   }
   return results;
 }
 
 // ─── Batch embedding via Mistral (avec retry) ────────────────────────────────
-async function embedBatch(texts) {
+export async function embedBatch(texts) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const res = await fetch('https://api.mistral.ai/v1/embeddings', {
       method: 'POST',
@@ -96,33 +93,25 @@ async function embedBatch(texts) {
   }
 }
 
-// ─── Traitement d'un fichier ───────────
-async function processFile(filePath, index) {
-  const source = basename(filePath);
-  const rawText = readFileSync(filePath, 'utf-8');
-
-  console.log(`\n→ Traitement de ${source}...`);
-
-  // Chunking
-  const rawChunks = chunkWithOverlap(rawText, CONFIG.chunkSize, CONFIG.overlap);
-  const uniqueChunks = [...new Set(rawChunks)];
-  console.log(`  ${rawChunks.length} chunks → ${uniqueChunks.length} uniques`);
-
+// ─── Embed + Index dans Pinecone ─────────────────────────────────────────────
+export async function embedAndIndex(chunks) {
+  const index = pinecone.index(PINECONE_INDEX_NAME);
   const vectors = [];
 
   // Embedding par groupes de CONFIG.embedConcurrency (parallélisme contrôlé)
-  for (let i = 0; i < uniqueChunks.length; i += CONFIG.embedConcurrency) {
-    const batch      = uniqueChunks.slice(i, i + CONFIG.embedConcurrency);
-    const embeddings = await embedBatch(batch);
+  for (let i = 0; i < chunks.length; i += CONFIG.embedConcurrency) {
+    const batch      = chunks.slice(i, i + CONFIG.embedConcurrency);
+    const texts      = batch.map(c => c.text);
+    const embeddings = await embedBatch(texts);
 
     for (let j = 0; j < batch.length; j++) {
       vectors.push({
-        id:     `${source}-chunk-${i + j}`,
+        id:     `${batch[j].source}-chunk-${batch[j].chunkIndex}`,
         values: embeddings[j],
         metadata: {
-          text:        batch[j],
-          source,
-          chunkIndex:  i + j,
+          text:        batch[j].text,
+          source:      batch[j].source,
+          chunkIndex:  batch[j].chunkIndex,
           createdAt:   new Date().toISOString()
         }
       });
@@ -130,41 +119,44 @@ async function processFile(filePath, index) {
   }
 
   // Upsert dans Pinecone par lots de CONFIG.batchSize
+  let upserted = 0;
   for (let i = 0; i < vectors.length; i += CONFIG.batchSize) {
     const batch = vectors.slice(i, i + CONFIG.batchSize);
     await index.namespace(PINECONE_NAMESPACE).upsert({ records: batch });
-    console.log(`  Upsert ${Math.min(i + CONFIG.batchSize, vectors.length)}/${vectors.length} vecteurs...`);
+    upserted = Math.min(i + CONFIG.batchSize, vectors.length);
+    console.log(`Upsert ${upserted}/${vectors.length}...`);
   }
 
-  console.log(`  ✓ ${vectors.length} vecteurs indexés`);
   return vectors.length;
 }
 
 // ─── Point d'entrée ───────
 async function main() {
-  console.log(`Namespace : "${PINECONE_NAMESPACE}"`);
-  console.log(`Corpus    : ${CORPUS_PATH}\n`);
+  console.log('Chargement du corpus...');
 
-  const files = loadCorpus(CORPUS_PATH);
+  const docs = loadCorpus(CORPUS_PATH);
 
-  if (files.length === 0) {
+  if (docs.length === 0) {
     console.log(`Aucun fichier ${SUPPORTED_EXTENSIONS.join('/')} trouvé dans ${CORPUS_PATH}`);
     return;
   }
 
-  console.log(`Indexation de ${files.length} fichiers dans l'index "${PINECONE_INDEX_NAME}"`);
-  const index = pinecone.index(PINECONE_INDEX_NAME);
-
-  let total = 0;
-  for (const file of files) {
-    try {
-      total += await processFile(file, index);
-    } catch (err) {
-      console.error(`  ✗ Erreur sur ${basename(file)} : ${err.message}`);
+  // Chunking de tous les fichiers → tableau plat de { text, source, chunkIndex }
+  const allChunks = [];
+  for (const { filename, text } of docs) {
+    const rawChunks = chunkWithOverlap(text, CONFIG.chunkSize, CONFIG.overlap);
+    const uniqueChunks = [...new Set(rawChunks)];
+    for (let i = 0; i < uniqueChunks.length; i++) {
+      allChunks.push({ text: uniqueChunks[i], source: filename, chunkIndex: i });
     }
   }
 
-  console.log(`\nIndexation terminée. ${total} vecteurs au total.`);
+  console.log(`${docs.length} fichiers trouvés, ${allChunks.length} chunks créés`);
+  console.log('Indexation en cours...');
+
+  const total = await embedAndIndex(allChunks);
+
+  console.log(`Indexation terminée : ${total} vecteurs dans l'index "${PINECONE_INDEX_NAME}"`);
 }
 
 main().catch(console.error);

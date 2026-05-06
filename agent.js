@@ -1,12 +1,8 @@
 // agent.js — Couche LLM : injecte le contexte récupéré et génère une réponse
-import { retrieve }                                    from './query.js';
+import { retrieveContext }                             from './query.js';
 import { MISTRAL_API_KEY, CHAT_MODEL, MAX_CONTEXT_CHARS, MAX_RETRIES, RETRY_BASE_MS } from './config.js';
 
-// ─── System prompt ────────────────────────────────────────────────────────────
-// Instruction explicite : répondre UNIQUEMENT à partir du contexte fourni.
-// Si l'information est absente → le modèle doit le dire clairement.
-// "Ne jamais inventer" est répété deux fois pour renforcer l'instruction.
-
+// ─── System prompt ────────────
 const SYSTEM_PROMPT = `Tu es un assistant de recherche documentaire.
 Réponds UNIQUEMENT en te basant sur le contexte fourni ci-dessous.
 Ne jamais inventer ni compléter avec des connaissances externes.
@@ -14,7 +10,7 @@ Si la réponse n'est pas dans le contexte, réponds exactement :
 "Je ne trouve pas cette information dans les documents disponibles."
 Réponds en français, en texte brut, sans markdown.`;
 
-// ─── Appel Mistral Chat (avec retry) ─────────────────────────────────────────
+// ─── Appel Mistral Chat (avec retry) ────────────
 
 async function callMistral(messages) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -50,8 +46,6 @@ async function callMistral(messages) {
 }
 
 // ─── Construction du prompt ───────────────────────────────────────────────────
-// Le contexte est tronqué à MAX_CONTEXT_CHARS pour rester dans la fenêtre de tokens.
-// Chaque chunk est précédé de sa source pour la traçabilité.
 
 function buildUserMessage(question, chunks) {
   // Formatage : [source] texte — séparés par des lignes vides
@@ -83,14 +77,14 @@ function buildUserMessage(question, chunks) {
  */
 export async function ask(rawQuestion) {
   // 1. Retrieval — embed + Pinecone
-  const { question, chunks } = await retrieve(rawQuestion);
+  const chunks = await retrieveContext(rawQuestion);
   const contextFound = chunks.length > 0;
 
   // 2. Si aucun chunk pertinent → réponse directe sans appeler le LLM
   //    (évite un appel API inutile + garantit la réponse attendue)
   if (!contextFound) {
     return {
-      question,
+      question:     rawQuestion,
       answer:       "Je ne trouve pas cette information dans les documents disponibles.",
       contextFound: false,
       chunks:       [],
@@ -99,7 +93,7 @@ export async function ask(rawQuestion) {
   }
 
   // 3. Construction du prompt
-  const userMessage = buildUserMessage(question, chunks);
+  const userMessage = buildUserMessage(rawQuestion, chunks);
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user',   content: userMessage   }
@@ -111,5 +105,5 @@ export async function ask(rawQuestion) {
   // 5. Sources uniques (pour affichage / traçabilité)
   const sources = [...new Set(chunks.map(c => c.source))];
 
-  return { question, answer, contextFound, chunks, sources };
+  return { question: rawQuestion, answer, contextFound, chunks, sources };
 }

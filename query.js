@@ -19,7 +19,7 @@ function sanitizeQuestion(input) {
     .replace(/[\x00-\x1F\x7F]/g, ' ') // caractères de contrôle
     .replace(/\s+/g, ' ')
     .trim();
-  if (cleaned.length === 0) throw new Error('La question ne peut pas être vide.');
+  if (cleaned.length === 0) return '';
   return cleaned.slice(0, 500); // limite à 500 chars (~125 tokens max)
 }
 
@@ -30,7 +30,6 @@ async function embedQuery(text) {
       method: 'POST',
       headers: {
         'Content-Type':  'application/json',
-        // La clé n'apparaît jamais dans les logs — elle est lue depuis config.js
         'Authorization': `Bearer ${MISTRAL_API_KEY}`
       },
       body: JSON.stringify({ model: EMBED_MODEL, input: [text] })
@@ -81,29 +80,32 @@ async function queryPinecone(vector, topK) {
  * Prend une question brute, l'embède, interroge Pinecone et retourne
  * les chunks pertinents (filtrés par SCORE_THRESHOLD).
  *
- * @param {string} rawQuestion  — question de l'utilisateur (non sanitisée)
+ * @param {string} query        — question de l'utilisateur (non sanitisée)
  * @param {number} [topK]       — nombre de résultats demandés à Pinecone
- * @returns {{ question: string, chunks: Array<{ score: number, text: string, source: string }> }}
+ * @returns {Promise<Array<{ text: string, source: string, score: number, chunkIndex: number|null }>>}
  */
-export async function retrieve(rawQuestion, topK = TOP_K) {
-  // 1. Sanitisation
-  const question = sanitizeQuestion(rawQuestion);
+export async function retrieveContext(query, topK = TOP_K) {
+  try {
+    const question = sanitizeQuestion(query);
 
-  // 2. Embedding de la question
-  const vector = await embedQuery(question);
+    if (question.length === 0) {
+      console.warn('[retrieveContext] Question vide — aucun chunk retourné.');
+      return [];
+    }
+    const vector = await embedQuery(question);
+    const data = await queryPinecone(vector, topK);
 
-  // 3. Recherche dans Pinecone
-  const data = await queryPinecone(vector, topK);
-
-  // 4. Filtrage par score + extraction des métadonnées utiles
-  const chunks = (data.matches || [])
-    .filter(m => m.score >= SCORE_THRESHOLD)
-    .map(m => ({
-      score:      parseFloat(m.score.toFixed(4)),
-      text:       m.metadata?.text       || '',
-      source:     m.metadata?.source     || 'inconnu',
-      chunkIndex: m.metadata?.chunkIndex ?? null
-    }));
-
-  return { question, chunks };
+    // 5. Filtrage par score + extraction des métadonnées utiles
+    return (data.matches || [])
+      .filter(m => m.score >= SCORE_THRESHOLD)
+      .map(m => ({
+        text:       m.metadata?.text       || '',
+        source:     m.metadata?.source     || 'inconnu',
+        score:      parseFloat(m.score.toFixed(4)),
+        chunkIndex: m.metadata?.chunkIndex ?? null
+      }));
+  } catch (err) {
+    console.error(`[retrieveContext] ${err.message}`);
+    return [];
+  }
 }
