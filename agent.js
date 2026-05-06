@@ -1,9 +1,12 @@
-// agent.js — Couche LLM : génération RAG avec anti-hallucination (Phase 5)
+// agent.js — Couche LLM : génération RAG avec observability (Phase 5-6)
 import { retrieveContext }  from './query.js';
 import {
   MISTRAL_API_KEY, CHAT_MODEL, MAX_CONTEXT_CHARS,
   MAX_RETRIES, RETRY_BASE_MS
 } from './config.js';
+
+const COST_PER_INPUT_TOKEN  = 0.1 / 1_000_000;
+const COST_PER_OUTPUT_TOKEN = 0.3 / 1_000_000;
 
 // ─── System prompt ────────────
 const SYSTEM_PROMPT = `Tu es un assistant de recherche documentaire strictement contraint.
@@ -20,6 +23,7 @@ RÈGLES ABSOLUES — aucune exception :
 7. Réponds en français, en texte brut, sans markdown.`;
 
 // ─── Appel Mistral Chat (avec retry) ────────
+// Retourne { content, usage: { prompt_tokens, completion_tokens } }
 
 async function callMistral(messages) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -39,7 +43,10 @@ async function callMistral(messages) {
 
     if (res.ok) {
       const data = await res.json();
-      return data.choices[0].message.content.trim();
+      return {
+        content: data.choices[0].message.content.trim(),
+        usage:   data.usage || { prompt_tokens: 0, completion_tokens: 0 }
+      };
     }
 
     const isRetryable = res.status === 429 || res.status === 503;
@@ -76,12 +83,15 @@ function formatContext(context) {
  *
  * @param {string} query    — question de l'utilisateur
  * @param {Array<{ text: string, source: string }>} context — chunks récupérés par retrieveContext
- * @returns {Promise<string>} — réponse en texte
+ * @returns {Promise<{ content: string, usage: { prompt_tokens: number, completion_tokens: number } }>}
  */
 export async function generateCompletion(query, context) {
   // Pas de contexte → réponse directe sans appel LLM
   if (!context || context.length === 0) {
-    return "Je ne trouve pas cette information dans les documents fournis.";
+    return {
+      content: "Je ne trouve pas cette information dans les documents fournis.",
+      usage:   { prompt_tokens: 0, completion_tokens: 0 }
+    };
   }
 
   const formattedContext = formatContext(context);
@@ -94,30 +104,73 @@ export async function generateCompletion(query, context) {
   return callMistral(messages);
 }
 
-// ─── Fonction principale (orchestrateur retrieval + génération) ────────────────
-
+// ─── ragQuery — Pipeline complète + observability (Phase 6) ───────────────────
 /**
- * Pipeline complet : retrieval (Phase 4) + génération (Phase 5).
+ * Assemble retrieveContext + generateCompletion avec métriques.
  *
- * @param {string} rawQuestion — question brute de l'utilisateur
- * @returns {{
- *   question:       string,
- *   answer:         string,
- *   contextFound:   boolean,
- *   chunks:         Array<{ score: number, text: string, source: string, chunkIndex: number|null }>,
- *   sources:        string[]
- * }}
+ * @param {string} question
+ * @param {{ topK?: number, verbose?: boolean }} options
+ * @returns {{ answer: string, sources: string[], chunks: object[], metrics: object }}
  */
-export async function ask(rawQuestion) {
-  // 1. Retrieval — embed + Pinecone (Phase 4)
-  const chunks = await retrieveContext(rawQuestion);
-  const contextFound = chunks.length > 0;
+export async function ragQuery(question, options = {}) {
+  const { topK = 5, verbose = false } = options;
 
-  // 2. Génération — prompt RAG + Mistral (Phase 5)
-  const answer = await generateCompletion(rawQuestion, chunks);
+  if (verbose) console.log(`[ragQuery] question="${question.slice(0, 80)}..."`);
 
-  // 3. Sources uniques dédupliquées
+  // ─── Retrieval (Phase 4) ────────
+  const t0 = performance.now();
+  const chunks = await retrieveContext(question, topK);
+  const retrievalMs = Math.round(performance.now() - t0);
+
+  const scores   = chunks.map(c => c.score);
+  const topScore = scores.length > 0 ? Math.max(...scores) : 0;
+  const avgScore = scores.length > 0
+    ? parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(4))
+    : 0;
+
+  if (verbose) {
+    console.log(`[retrieve] topK=${chunks.length} retournés en ${retrievalMs}ms, top score ${topScore}, avg score ${avgScore}`);
+    for (const c of chunks) {
+      console.log(`  [${c.score}] ${c.source}, "${c.text.slice(0, 60)}..."`);
+    }
+  }
+
+  // ─── Génération (Phase 5) ──────
+  const t1 = performance.now();
+  const { content: answer, usage } = await generateCompletion(question, chunks);
+  const generationMs = Math.round(performance.now() - t1);
+
+  const promptTokens     = usage.prompt_tokens;
+  const completionTokens = usage.completion_tokens;
+  const costUSD = parseFloat(
+    (promptTokens * COST_PER_INPUT_TOKEN + completionTokens * COST_PER_OUTPUT_TOKEN).toFixed(6)
+  );
+
+  if (verbose) {
+    console.log(`[generate] ${CHAT_MODEL}, ${promptTokens} tokens in / ${completionTokens} tokens out, ${generationMs}ms, $${costUSD}`);
+    console.log(`[ragQuery] total ${retrievalMs + generationMs}ms`);
+  }
+
+  // ─── Résultat ────────
   const sources = [...new Set(chunks.map(c => c.source))];
 
-  return { question: rawQuestion, answer, contextFound, chunks, sources };
+  const metrics = {
+    topScore,
+    avgScore,
+    retrievalMs,
+    generationMs,
+    promptTokens,
+    completionTokens,
+    costUSD
+  };
+
+  return { answer, sources, chunks, metrics };
+}
+
+// ─── ask — wrapper rétrocompatible pour eval.js ──────
+
+export async function ask(rawQuestion) {
+  const { answer, sources, chunks, metrics } = await ragQuery(rawQuestion);
+  const contextFound = chunks.length > 0;
+  return { question: rawQuestion, answer, contextFound, chunks, sources, metrics };
 }
