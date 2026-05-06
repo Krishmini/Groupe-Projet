@@ -1,2 +1,11 @@
 node_modules/
 .env
+corpus/
+tools/
+agent-loop.js
+calculatrice-agent.js
+weather-agent.js
+chat-agent.js
+hybrid-agent.js
+search-agent.js
+vector-store.js
