@@ -32,7 +32,7 @@ export const CHAT_MODEL  = 'mistral-small-latest';
 // ─── Paramètres de retrieval ─────────────
 
 export const TOP_K             = 5;     // nombre de chunks retournés par Pinecone
-export const SCORE_THRESHOLD   = 0.5;   // score cosine minimum — en dessous = non pertinent
+export const SCORE_THRESHOLD   = 0.7;   // score cosine minimum — en dessous = non pertinent
 export const MAX_CONTEXT_CHARS = 4000;  // limite de contexte injectée dans le prompt (~1000 tokens)
 
 // ─── Retry (429 / 503) ───────────────
