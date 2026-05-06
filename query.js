@@ -1,0 +1,109 @@
+// query.js — Pipeline de retrieval : embed la question + interroge Pinecone
+// Utilisé par agent.js et eval.js.
+import {
+  MISTRAL_API_KEY,
+  PINECONE_API_KEY,
+  PINECONE_INDEX_HOST,
+  PINECONE_NAMESPACE,
+  EMBED_MODEL,
+  TOP_K,
+  SCORE_THRESHOLD,
+  MAX_RETRIES,
+  RETRY_BASE_MS
+} from './config.js';
+
+// ─── Sanitisation de l'entrée utilisateur ────────────────────────────────────
+function sanitizeQuestion(input) {
+  if (typeof input !== 'string') throw new TypeError('La question doit être une chaîne de caractères.');
+  const cleaned = input
+    .replace(/[\x00-\x1F\x7F]/g, ' ') // caractères de contrôle
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned.length === 0) throw new Error('La question ne peut pas être vide.');
+  return cleaned.slice(0, 500); // limite à 500 chars (~125 tokens max)
+}
+
+// ─── Embedding via Mistral (avec retry) ──────────
+async function embedQuery(text) {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const res = await fetch('https://api.mistral.ai/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        // La clé n'apparaît jamais dans les logs — elle est lue depuis config.js
+        'Authorization': `Bearer ${MISTRAL_API_KEY}`
+      },
+      body: JSON.stringify({ model: EMBED_MODEL, input: [text] })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      return data.data[0].embedding; // tableau de 1024 floats
+    }
+
+    const isRetryable = res.status === 429 || res.status === 503;
+    if (isRetryable && attempt < MAX_RETRIES) {
+      const wait = attempt * RETRY_BASE_MS;
+      console.warn(`  [query] Erreur ${res.status} — retry ${attempt}/${MAX_RETRIES} dans ${wait / 1000}s...`);
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+
+    // Ne pas inclure le corps de la réponse dans l'erreur (peut contenir des infos sensibles)
+    throw new Error(`Mistral embeddings → HTTP ${res.status}`);
+  }
+}
+
+// ─── Requête Pinecone ──────
+
+async function queryPinecone(vector, topK) {
+  const res = await fetch(`${PINECONE_INDEX_HOST}/query`, {
+    method: 'POST',
+    headers: {
+      'Api-Key':      PINECONE_API_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      vector,
+      topK,
+      includeMetadata: true,
+      namespace: PINECONE_NAMESPACE
+    })
+  });
+
+  if (!res.ok) throw new Error(`Pinecone query → HTTP ${res.status}`);
+  return res.json();
+}
+
+// ─── Retrieval principal ────────
+
+/**
+ * Prend une question brute, l'embède, interroge Pinecone et retourne
+ * les chunks pertinents (filtrés par SCORE_THRESHOLD).
+ *
+ * @param {string} rawQuestion  — question de l'utilisateur (non sanitisée)
+ * @param {number} [topK]       — nombre de résultats demandés à Pinecone
+ * @returns {{ question: string, chunks: Array<{ score: number, text: string, source: string }> }}
+ */
+export async function retrieve(rawQuestion, topK = TOP_K) {
+  // 1. Sanitisation
+  const question = sanitizeQuestion(rawQuestion);
+
+  // 2. Embedding de la question
+  const vector = await embedQuery(question);
+
+  // 3. Recherche dans Pinecone
+  const data = await queryPinecone(vector, topK);
+
+  // 4. Filtrage par score + extraction des métadonnées utiles
+  const chunks = (data.matches || [])
+    .filter(m => m.score >= SCORE_THRESHOLD)
+    .map(m => ({
+      score:      parseFloat(m.score.toFixed(4)),
+      text:       m.metadata?.text       || '',
+      source:     m.metadata?.source     || 'inconnu',
+      chunkIndex: m.metadata?.chunkIndex ?? null
+    }));
+
+  return { question, chunks };
+}

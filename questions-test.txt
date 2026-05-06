@@ -1,0 +1,24 @@
+# Questions de test — Évaluation du pipeline RAG
+# 10 questions couvrant les deux documents du corpus.
+#
+# Q1–Q6 : happy paths (réponse dans le corpus)
+# Q7–Q8 : cas limites / reformulations
+# Q9–Q10 : adversarial / hors corpus (réponse attendue : "je ne sais pas")
+
+## Happy paths — Droit du travail
+Q1: Quels sont les motifs de discrimination interdits par l'article L1132-1 du Code du travail ?
+Q2: Quelles protections existent pour un salarié qui exerce son droit de grève ?
+Q3: Que se passe-t-il si un acte est pris en violation du principe de non-discrimination ?
+
+## Happy paths — Node.js
+Q4: Quels sont les niveaux de stabilité définis dans la documentation Node.js ?
+Q5: Quels modules Node.js ont le statut Deprecated ?
+Q6: Quelle est la différence entre les stades 1.0, 1.1 et 1.2 des fonctionnalités expérimentales ?
+
+## Cas limites / reformulations
+Q7: Un salarié juré peut-il être licencié à cause de ses fonctions de juré ?
+Q8: Est-ce que le module SQLite de Node.js est stable ?
+
+## Adversarial / hors corpus
+Q9: Quelle est la capitale de la France ?
+Q10: Comment configurer un serveur Express avec TypeScript ?
