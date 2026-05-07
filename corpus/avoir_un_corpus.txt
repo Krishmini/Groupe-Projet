@@ -1,0 +1,40 @@
+﻿Phase 1 - Choisir et préparer le corpus
+Trois options, chaque groupe peut choisir la sienne. La pipeline derrière sera la même, c'est le corpus qui change la "couleur" de votre démo de fin de semaine.
+Option A - La doc d'un outil IA récent
+Pydantic AI, un framework Python pour construire des agents LLM avec validation typée, sorti fin 2024 par l'équipe Pydantic (la lib de validation Python derrière FastAPI, l'équivalent côté Python de Zod, qu'on vient de croiser en section 5 LangChain). Pourquoi cette option est pédagogiquement forte : la plupart des LLMs ont une date de coupure d'entraînement avant 2025. Ils ignorent Pydantic AI ou le confondent avec Pydantic tout court. Sans RAG, demandez à votre mistral-small-latest "Comment Pydantic AI gère-t-il les outils ?"  vous aurez une réponse vague, brodée, parfois inventée. Avec votre RAG sur la doc, vous aurez la réponse exacte avec citation de fichier. C'est le moment "wow" qu'on cherche. Setup, 30 secondes :
+git clone --depth 1 https://github.com/pydantic/pydantic-ai.git /tmp/pa-clone mkdir -p corpus (cd /tmp/pa-clone && find docs -name "*.md") | while IFS= read -r f; do
+flat=$(echo "$f" | tr '/' '_') cp "/tmp/pa-clone/$f" "corpus/$flat" done rm -rf /tmp/pa-clone ls corpus
+Une bonne vingtaine de fichiers markdown, sujets : agents, models, tools, dependencies, streaming, message handling. Largement de quoi indexer et stresser votre pipeline. Vos 10 questions de référence porteront sur Pydantic AI :
+happy : "Comment définir un outil dans Pydantic AI ?", "Quelle est la différence entre Agent et RunContext ?", "Comment streamer une réponse ?" ambiguës : "Comment gérer les erreurs ?" (plusieurs sections du corpus pourraient répondre) adversariales : "Quel est le PIB de la France en 2023 ?" (hors corpus, doit déclencher "je ne sais pas")
+Option B - Une de vos conversations WhatsApp
+Vos messages avec un groupe de potes, de famille, ou autres : votre vraie data privée. Si vous voulez voir un RAG répondre à "C'est qui qui dit toujours X ?" ou "Date de notre première partie sur tel jeu", ça claque, potentiellement.
+Aucun LLM ne sait quoi que ce soit de vos conversations privées donc le test est réel. Sans RAG, demandez à mistral-small-latest "Quel est notre running gag dans ce groupe ?" il va complètement inventer. Avec votre RAG sur l'export, vous aurez la vraie réponse avec citation du jour et de l'auteur. Bonus : vos questions deviennent uniques, votre baseline d'évaluation devient personnelle, et la qualité du retrieval saute aux yeux quand elle foire.
+
+Setup, 2 minutes :
+1. Sur votre téléphone, ouvrez WhatsApp et choisissez une conversation. Menu de la conv  Plus  Exporter la discussion  Sans les médias. Vous récupérez un .txt que WhatsApp propose d'envoyer (mail à vous-même, AirDrop, Drive, à vous de voir).
+2. Récupérez le fichier sur votre laptop, puis depuis la racine du projet :
+
+mkdir -p corpus mv ~/Downloads/_chat.txt corpus/whatsapp-conv.txt echo "corpus/" >> .gitignore ls corpus
+
+# adaptez le chemin source
+
+3. Vérifiez que corpus/ est bien dans .gitignore avant tout git add . Vos potes ne sont pas signataires d'un consentement RGPD pour qu'on pousse leurs messages sur GitHub.
+Le fichier ressemble à ça :
+
+[12/03/2024, 14:32:01] Alice : T'as vu le match hier ? [12/03/2024, 14:32:45] Bob : Pas eu le temps, demande à Charlie [12/03/2024, 14:33:10] Charlie : 2-1 dans les arrêts de jeu, énorme
+Note pour la Phase 2 (chunking) : un message isolé ("ok", "Mdrrr") embedé seul donne un vecteur inexploitable. Vous devrez regrouper par paquet de messages, ou par journée. C'est un sujet à part entière en RAG en prod (chunking adapté au type de document), on y reviendra. Vos 10 questions de référence porteront sur votre conversation :
+happy : "Quel est notre running gag ?", "De quoi on parle le plus ?", "Date de notre premier clash sur ..." ambiguës : "Qu'est-ce que je dis quand je suis énervé ?" adversariales : "Quel est le code postal de la mairie de Lyon ?" (hors corpus, doit dire "je ne sais pas")
+
+Option C - Apportez votre propre data
+L'option la plus proche de la réalité pro. Vous indexez quelque chose que vous connaissez vraiment, donc vous pouvez juger la qualité des réponses sans hésitation. C'est aussi cette option qui donne les meilleures démos en fin de semaine, parce que vous avez quelque chose à dire dessus.
+Exemples qui marchent bien :
+Des PDFs de vos cours IPSSI (droit, marketing, gestion, anglais, n'importe lequel sauf celui-ci). Conversion rapide en texte avec pdftotext en CLI : brew install poppler (macOS) ou sudo apt install poppler-utils (Linux), puis pdftotext cours.pdf corpus/cours.txt .
+Un export Notion ou Google Docs. Notion : Settings & Members  Settings  Export content  Markdown. Google Docs : Fichier  Télécharger  Texte brut (.txt) .
+Le README + docs d'un projet perso ou open source que vous utilisez vraiment (votre projet de fin d'année, un framework que vous bossez en stage, un projet GitHub que vous suivez). À la racine du projet : find . -name "*.md" -not -path "*/node_modules/*" -exec cp {} ./corpus/ \; .
+Un export Discord via DiscordChatExporter au format texte, plus structuré que WhatsApp, conserve les threads.
+
+Trois précautions à respecter :
+Confidentialité d'abord. Toutes les données dans corpus/ , et corpus/ doit être dans .gitignore . Ne pushez jamais des données personnelles, des conversations, ou du contenu protégé sur un repo public. Index Pinecone séparé si la data est identifiable ( mini-perplexity-perso-grpX plutôt que l'index commun), ça permet aussi de reset votre data sans toucher au reste du groupe. Calibrez le volume. Un seul fichier de 3 lignes ne donnera rien d'intéressant ; un PDF de 800 pages multilingue va saturer. Visez 5-50 fichiers, 50 KB à 5 MB total. Ce sweet spot donne des chunks variés sans exploser le coût d'embedding.
+Une fois votre corpus prêt (Option A, B ou C), prenez 10 minutes pour l'explorer. Écrivez 10 questions de référence dans questions-test.txt . La règle pour calibrer ce jeu de questions : 6 questions dont la réponse est clairement dans le corpus (vos happy paths), 2 questions ambiguës où plusieurs chunks pourraient répondre (vos cas tordus), 2 questions dont la réponse n'est PAS dans le corpus (vos adversariales, pour valider plus tard que le pipeline sait dire "je ne sais pas").
+Ces 10 questions seront votre baseline d'évaluation toute la semaine. On y reviendra en Phase 8 pour les noter, en Phase 11 pour comparer des variantes de pipeline, et en J5 pour mesurer l'impact des garde-fous.
+//

@@ -1,0 +1,13 @@
+﻿Les streams en Node.js permettent de traiter des données en flux.
+
+Gestion des erreurs :
+- Utiliser stream.on('error', handler)
+- Utiliser pipeline() pour capturer les erreurs automatiquement
+- Toujours gérer les erreurs pour éviter les crashs
+
+Exemple :
+readableStream.on('error', (err) => {
+  console.error(err);
+});
+
+//
