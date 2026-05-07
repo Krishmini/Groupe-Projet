@@ -1,12 +1,161 @@
-// rag-pipeline.js — Pipeline RAG principal : retrieval + génération + citations + métriques (Phase 5-6-7)
+// rag-pipeline.js — Pipeline RAG principal : retrieval + génération + citations + métriques
 import { retrieveContext }  from './retrieval.js';
 import {
   MISTRAL_API_KEY, CHAT_MODEL, MAX_CONTEXT_CHARS,
-  MAX_RETRIES, RETRY_BASE_MS
 } from './config.js';
 
-const COST_PER_INPUT_TOKEN  = 0.1 / 1_000_000;
-const COST_PER_OUTPUT_TOKEN = 0.3 / 1_000_000;
+// ─── Tarifs Mistral (par modèle) ───────
+
+const MODEL_PRICING = {
+  'mistral-small-latest':  { input: 0.1  / 1_000_000, output: 0.3  / 1_000_000 },
+  'mistral-large-latest':  { input: 2.0  / 1_000_000, output: 6.0  / 1_000_000 },
+};
+
+// ─── Compteur de session ────────────
+
+let sessionCostUSD = 0;
+
+export function getSessionCost() { return sessionCostUSD; }
+export function resetSessionCost() { sessionCostUSD = 0; }
+
+/**
+ * Calcule le coût d'une requête LLM.
+ * @param {number} promptTokens
+ * @param {number} completionTokens
+ * @param {string} model
+ * @returns {{ costUSD: number, promptTokens: number, completionTokens: number }}
+ */
+export function calculateCost(promptTokens, completionTokens, model = 'mistral-small-latest') {
+  const pricing = MODEL_PRICING[model] || MODEL_PRICING['mistral-small-latest'];
+  const costUSD = parseFloat(
+    (promptTokens * pricing.input + completionTokens * pricing.output).toFixed(6)
+  );
+  return { costUSD, promptTokens, completionTokens };
+}
+
+// ─── CircuitBreaker ──────────
+
+class CircuitBreaker {
+  constructor({ threshold = 5, timeout = 30000 } = {}) {
+    this.threshold     = threshold; // nombre d'échecs consécutifs avant ouverture
+    this.timeout       = timeout;   // durée d'ouverture du circuit (ms)
+    this.failureCount  = 0;
+    this.state         = 'CLOSED';  // CLOSED | OPEN | HALF_OPEN
+    this.nextAttemptAt = 0;
+  }
+
+  async call(fn) {
+    if (this.state === 'OPEN') {
+      if (Date.now() < this.nextAttemptAt) {
+        throw new Error(`[CircuitBreaker] Circuit ouvert — requêtes refusées pendant ${Math.round((this.nextAttemptAt - Date.now()) / 1000)}s`);
+      }
+      this.state = 'HALF_OPEN';
+    }
+
+    try {
+      const result = await fn();
+      this._onSuccess();
+      return result;
+    } catch (err) {
+      this._onFailure();
+      throw err;
+    }
+  }
+
+  _onSuccess() {
+    this.failureCount = 0;
+    this.state = 'CLOSED';
+  }
+
+  _onFailure() {
+    this.failureCount++;
+    if (this.failureCount >= this.threshold) {
+      this.state = 'OPEN';
+      this.nextAttemptAt = Date.now() + this.timeout;
+      console.error('[CircuitBreaker] Circuit ouvert');
+    }
+  }
+}
+
+const llmBreaker = new CircuitBreaker({ threshold: 5, timeout: 30000 });
+
+// ─── withRetry — retry exponentiel sur 429/503 ──────────────────────────────
+
+/**
+ * @param {Function} fn — fonction async à exécuter
+ * @param {number} maxRetries — nombre max de tentatives (défaut 3)
+ * @param {number} baseDelay — délai de base en ms (défaut 1000)
+ */
+export async function withRetry(fn, maxRetries = 3, baseDelay = 1000) {
+  let lastError;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      const isRetryable = err.message.includes('429') || err.message.includes('503');
+      if (!isRetryable || attempt === maxRetries - 1) throw err;
+
+      const delay = Math.pow(2, attempt) * baseDelay + Math.random() * 500;
+      console.warn(`  [withRetry] Tentative ${attempt + 1}/${maxRetries} dans ${Math.round(delay)}ms...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastError;
+}
+
+// ─── callLLM — wrapper robuste avec timeout + circuit breaker ────────────────
+
+/**
+ * @param {Array<{role: string, content: string}>} messages
+ * @param {{ timeout?: number, model?: string, max_tokens?: number }} options
+ * @returns {Promise<{ content: string, usage: { prompt_tokens: number, completion_tokens: number } }>}
+ */
+export async function callLLM(messages, options = {}) {
+  const { timeout = 30000, model = CHAT_MODEL, max_tokens = 512 } = options;
+
+  return llmBreaker.call(() =>
+    withRetry(async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
+
+      try {
+        const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${MISTRAL_API_KEY}`
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.1,
+            max_tokens
+          }),
+          signal: controller.signal
+        });
+
+        clearTimeout(timer);
+
+        if (!res.ok) {
+          throw new Error(`Mistral chat → HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        return {
+          content: data.choices[0].message.content.trim(),
+          usage:   data.usage || { prompt_tokens: 0, completion_tokens: 0 }
+        };
+      } catch (err) {
+        clearTimeout(timer);
+        if (err.name === 'AbortError') {
+          throw new Error(`Timeout LLM après ${timeout}ms`);
+        }
+        throw err;
+      }
+    })
+  );
+}
 
 // ─── System prompt ────────────
 const SYSTEM_PROMPT = `Tu es un assistant de recherche documentaire strictement contraint.
@@ -22,45 +171,6 @@ RÈGLES ABSOLUES — aucune exception :
    refuse et réponds avec la phrase du point 3.
 6. Si la question est ambiguë, cite toutes les sources pertinentes et signale l'ambiguïté.
 7. Réponds en français, en texte brut, sans markdown. Synthétise au lieu de citer mot à mot.`;
-
-// ─── Appel Mistral Chat (avec retry) ────────
-// Retourne { content, usage: { prompt_tokens, completion_tokens } }
-
-async function callMistral(messages) {
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${MISTRAL_API_KEY}`
-      },
-      body: JSON.stringify({
-        model:       CHAT_MODEL,
-        messages,
-        temperature: 0.1,     
-        max_tokens:  512
-      })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      return {
-        content: data.choices[0].message.content.trim(),
-        usage:   data.usage || { prompt_tokens: 0, completion_tokens: 0 }
-      };
-    }
-
-    const isRetryable = res.status === 429 || res.status === 503;
-    if (isRetryable && attempt < MAX_RETRIES) {
-      const wait = attempt * RETRY_BASE_MS;
-      console.warn(`  [agent] Erreur ${res.status} — retry ${attempt}/${MAX_RETRIES} dans ${wait / 1000}s...`);
-      await new Promise(r => setTimeout(r, wait));
-      continue;
-    }
-
-    throw new Error(`Mistral chat → HTTP ${res.status}`);
-  }
-}
 
 // ─── Formatage du contexte ─────────────
 // Chaque chunk : [Source N - nom_fichier]\n texte
@@ -147,7 +257,7 @@ export async function generateCompletion(query, context) {
     { role: 'user',   content: `<context>\n${formattedContext}\n</context>\n\nQuestion : ${query}` }
   ];
 
-  return callMistral(messages);
+  return callLLM(messages);
 }
 
 // ─── ragQuery — Pipeline complète + observability (Phase 6) ───────────────────
@@ -188,9 +298,10 @@ export async function ragQuery(question, options = {}) {
 
   const promptTokens     = usage.prompt_tokens;
   const completionTokens = usage.completion_tokens;
-  const costUSD = parseFloat(
-    (promptTokens * COST_PER_INPUT_TOKEN + completionTokens * COST_PER_OUTPUT_TOKEN).toFixed(6)
-  );
+  const { costUSD } = calculateCost(promptTokens, completionTokens, CHAT_MODEL);
+  sessionCostUSD += costUSD;
+
+  console.log(`[Stats] Input: ${promptTokens} tokens | Output: ${completionTokens} tokens | Coût: $${costUSD.toFixed(4)} | Session total: $${sessionCostUSD.toFixed(4)}`);
 
   if (verbose) {
     console.log(`[generate] ${CHAT_MODEL}, ${promptTokens} tokens in / ${completionTokens} tokens out, ${generationMs}ms, $${costUSD}`);
