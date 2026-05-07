@@ -1,5 +1,4 @@
-// retrieval.js — Module de retrieval sémantique : embed question + query Pinecone + filtrage (Phase 4)
-// Utilisé par agent.js et eval.js.
+// retrieval.js — Retrieval sémantique : sanitize → embed → Pinecone → filtrage (J4 Phase 4)
 import {
   MISTRAL_API_KEY,
   PINECONE_API_KEY,
@@ -12,7 +11,7 @@ import {
   RETRY_BASE_MS
 } from './config.js';
 
-// ─── Détection de prompt injection ───────────────────────────────────────────
+// ─── Détection de prompt injection (J5 Phase 6) ─────────────
 
 const INJECTION_PATTERNS = [
   /ignore\s+(le|les|tout|all|previous|précédent)/i,
@@ -34,7 +33,7 @@ function detectInjection(text) {
   return false;
 }
 
-// ─── Sanitisation de l'entrée utilisateur ────────────────────────────────────
+// Sanitisation : supprime contrôle chars, trim, limite 500 chars, détecte injection
 function sanitizeQuestion(input) {
   if (typeof input !== 'string') throw new TypeError('La question doit être une chaîne de caractères.');
   const cleaned = input
@@ -47,15 +46,13 @@ function sanitizeQuestion(input) {
     console.warn('[security] ⚠️ Prompt injection détectée — requête transmise avec avertissement');
   }
 
-  return cleaned.slice(0, 500); // limite à 500 chars (~125 tokens max)
+  return cleaned.slice(0, 500);
 }
 
-// ─── Cache d'embeddings (évite les appels API redondants) ────────────────────
-
+// Cache embeddings LRU (max 100 entrées)
 const embedCache = new Map();
 const CACHE_MAX_SIZE = 100;
 
-// ─── Embedding via Mistral (avec retry + cache) ──────────
 async function embedQuery(text) {
   if (embedCache.has(text)) return embedCache.get(text);
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -70,9 +67,8 @@ async function embedQuery(text) {
 
     if (res.ok) {
       const data = await res.json();
-      const embedding = data.data[0].embedding; // tableau de 1024 floats
+      const embedding = data.data[0].embedding;
 
-      // Stocker en cache (LRU simple : supprimer le plus ancien si plein)
       if (embedCache.size >= CACHE_MAX_SIZE) {
         const oldest = embedCache.keys().next().value;
         embedCache.delete(oldest);
@@ -90,12 +86,10 @@ async function embedQuery(text) {
       continue;
     }
 
-    // Ne pas inclure le corps de la réponse dans l'erreur (peut contenir des infos sensibles)
+    // Ne pas exposer le corps de la réponse dans l'erreur
     throw new Error(`Mistral embeddings → HTTP ${res.status}`);
   }
 }
-
-// ─── Requête Pinecone ──────
 
 async function queryPinecone(vector, topK) {
   const res = await fetch(`${PINECONE_INDEX_HOST}/query`, {
@@ -116,16 +110,7 @@ async function queryPinecone(vector, topK) {
   return res.json();
 }
 
-// ─── Retrieval principal ────────
-
-/**
- * Prend une question brute, l'embède, interroge Pinecone et retourne
- * les chunks pertinents (filtrés par SCORE_THRESHOLD).
- *
- * @param {string} query        — question de l'utilisateur (non sanitisée)
- * @param {number} [topK]       — nombre de résultats demandés à Pinecone
- * @returns {Promise<Array<{ text: string, source: string, score: number, chunkIndex: number|null }>>}
- */
+// Retrieval principal
 export async function retrieveContext(query, topK = TOP_K, scoreThreshold = SCORE_THRESHOLD) {
   try {
     const question = sanitizeQuestion(query);
@@ -137,7 +122,6 @@ export async function retrieveContext(query, topK = TOP_K, scoreThreshold = SCOR
     const vector = await embedQuery(question);
     const data = await queryPinecone(vector, topK);
 
-    // 5. Filtrage par score + extraction des métadonnées utiles
     return (data.matches || [])
       .filter(m => m.score >= scoreThreshold)
       .map(m => ({
