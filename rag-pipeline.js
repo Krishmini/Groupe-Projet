@@ -1,4 +1,5 @@
 // rag-pipeline.js — Pipeline RAG principal : retrieval + génération + citations + métriques
+import { createHash }       from 'crypto';
 import { retrieveContext }  from './retrieval.js';
 import {
   MISTRAL_API_KEY, CHAT_MODEL, MAX_CONTEXT_CHARS,
@@ -79,6 +80,16 @@ class CircuitBreaker {
 }
 
 const llmBreaker = new CircuitBreaker({ threshold: 5, timeout: 30000 });
+
+// ─── Cache de réponses LLM (TTL 1 h) ────────────────────────────────────────
+
+const responseCache = new Map();
+const RESPONSE_CACHE_TTL = 3600 * 1000; // 1 heure
+
+function responseCacheKey(question, chunks) {
+  const chunkIds = chunks.map(c => `${c.source}:${c.chunkIndex}`).sort().join('|');
+  return createHash('md5').update(question + chunkIds).digest('hex');
+}
 
 // ─── withRetry — retry exponentiel sur 429/503 ──────────────────────────────
 
@@ -262,7 +273,7 @@ export function detectOrphanCitations(answer, maxSourceIndex) {
  * @param {Array<{ text: string, source: string }>} context — chunks récupérés par retrieveContext
  * @returns {Promise<{ content: string, usage: { prompt_tokens: number, completion_tokens: number } }>}
  */
-export async function generateCompletion(query, context) {
+export async function generateCompletion(query, context, model = CHAT_MODEL, maxTokens) {
   // Pas de contexte → réponse directe sans appel LLM
   if (!context || context.length === 0) {
     return {
@@ -278,7 +289,9 @@ export async function generateCompletion(query, context) {
     { role: 'user',   content: `<context>\n${formattedContext}\n</context>\n\nQuestion : ${query}` }
   ];
 
-  return callLLM(messages);
+  const llmOptions = { model };
+  if (maxTokens != null) llmOptions.max_tokens = maxTokens;
+  return callLLM(messages, llmOptions);
 }
 
 // ─── ragQuery — Pipeline complète + observability (Phase 6) ───────────────────
@@ -290,7 +303,7 @@ export async function generateCompletion(query, context) {
  * @returns {{ answer: string, sources: string[], chunks: object[], metrics: object }}
  */
 export async function ragQuery(question, options = {}) {
-  const { topK = 5, verbose = false, scoreThreshold } = options;
+  const { topK = 5, verbose = false, scoreThreshold, maxTokens } = options;
 
   if (verbose) console.log(`[ragQuery] question="${question.slice(0, 80)}..."`);
 
@@ -337,9 +350,16 @@ export async function ragQuery(question, options = {}) {
     };
   }
 
+  // ─── Cache check ──────
+  const cacheKey = responseCacheKey(question, chunks);
+  if (responseCache.has(cacheKey)) {
+    console.log('[Cache] HIT — pas d\'appel LLM');
+    return responseCache.get(cacheKey);
+  }
+
   // ─── Génération (Phase 5) ──────
   const t1 = performance.now();
-  const { content: answer, usage } = await generateCompletion(question, chunks);
+  const { content: answer, usage } = await generateCompletion(question, chunks, CHAT_MODEL, maxTokens);
   const generationMs = Math.round(performance.now() - t1);
 
   const promptTokens     = usage.prompt_tokens;
@@ -347,11 +367,19 @@ export async function ragQuery(question, options = {}) {
   const { costUSD } = calculateCost(promptTokens, completionTokens, CHAT_MODEL);
   sessionCostUSD += costUSD;
 
-  console.log(`[Stats] Input: ${promptTokens} tokens | Output: ${completionTokens} tokens | Coût: $${costUSD.toFixed(4)} | Session total: $${sessionCostUSD.toFixed(4)}`);
+  console.log(`[Stats] model=${CHAT_MODEL} | Input: ${promptTokens} tokens | Output: ${completionTokens} tokens | Coût: $${costUSD.toFixed(4)} | Session total: $${sessionCostUSD.toFixed(4)}`);
 
   if (verbose) {
     console.log(`[generate] ${CHAT_MODEL}, ${promptTokens} tokens in / ${completionTokens} tokens out, ${generationMs}ms, $${costUSD}`);
     console.log(`[ragQuery] total ${retrievalMs + generationMs}ms`);
+  }
+
+  // ─── Post-LLM citation check ────────
+  // Si des chunks ont été fournis mais le LLM n'a cité aucune source → warning
+  let citationWarning = null;
+  if (chunks.length > 0 && !/\[Source\s+\d+\]/i.test(answer)) {
+    citationWarning = '⚠️ La réponse ne cite aucune source. Les informations peuvent ne pas être vérifiables.';
+    if (verbose) console.warn('[citations] ' + citationWarning);
   }
 
   // ─── Résultat ────────
@@ -372,10 +400,17 @@ export async function ragQuery(question, options = {}) {
     promptTokens,
     completionTokens,
     costUSD,
-    orphanCitations
+    orphanCitations,
+    citationWarning
   };
 
-  return { answer, sources, chunksUsed: chunks.length, chunks, metrics };
+  const result = { answer, sources, chunksUsed: chunks.length, chunks, metrics };
+
+  // Cache avec TTL 1 h
+  responseCache.set(cacheKey, result);
+  setTimeout(() => responseCache.delete(cacheKey), RESPONSE_CACHE_TTL);
+
+  return result;
 }
 
 // ─── ask — wrapper rétrocompatible pour eval.js ──────

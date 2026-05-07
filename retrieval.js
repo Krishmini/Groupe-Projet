@@ -12,6 +12,28 @@ import {
   RETRY_BASE_MS
 } from './config.js';
 
+// ─── Détection de prompt injection ───────────────────────────────────────────
+
+const INJECTION_PATTERNS = [
+  /ignore\s+(le|les|tout|all|previous|précédent)/i,
+  /oublie\s+(tes|les|tout)/i,
+  /forget\s+(your|all|previous)/i,
+  /system\s*prompt/i,
+  /instructions?\s*(exactes?|complètes?|système)/i,
+  /change\s*(de|ton|your)\s*rôle/i,
+  /tu\s+es\s+maintenant/i,
+  /you\s+are\s+now/i,
+  /act\s+as/i,
+  /\bDAN\b|jailbreak/i,
+];
+
+function detectInjection(text) {
+  for (const pattern of INJECTION_PATTERNS) {
+    if (pattern.test(text)) return true;
+  }
+  return false;
+}
+
 // ─── Sanitisation de l'entrée utilisateur ────────────────────────────────────
 function sanitizeQuestion(input) {
   if (typeof input !== 'string') throw new TypeError('La question doit être une chaîne de caractères.');
@@ -20,11 +42,22 @@ function sanitizeQuestion(input) {
     .replace(/\s+/g, ' ')
     .trim();
   if (cleaned.length === 0) return '';
+
+  if (detectInjection(cleaned)) {
+    console.warn('[security] ⚠️ Prompt injection détectée — requête transmise avec avertissement');
+  }
+
   return cleaned.slice(0, 500); // limite à 500 chars (~125 tokens max)
 }
 
-// ─── Embedding via Mistral (avec retry) ──────────
+// ─── Cache d'embeddings (évite les appels API redondants) ────────────────────
+
+const embedCache = new Map();
+const CACHE_MAX_SIZE = 100;
+
+// ─── Embedding via Mistral (avec retry + cache) ──────────
 async function embedQuery(text) {
+  if (embedCache.has(text)) return embedCache.get(text);
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const res = await fetch('https://api.mistral.ai/v1/embeddings', {
       method: 'POST',
@@ -37,7 +70,16 @@ async function embedQuery(text) {
 
     if (res.ok) {
       const data = await res.json();
-      return data.data[0].embedding; // tableau de 1024 floats
+      const embedding = data.data[0].embedding; // tableau de 1024 floats
+
+      // Stocker en cache (LRU simple : supprimer le plus ancien si plein)
+      if (embedCache.size >= CACHE_MAX_SIZE) {
+        const oldest = embedCache.keys().next().value;
+        embedCache.delete(oldest);
+      }
+      embedCache.set(text, embedding);
+
+      return embedding;
     }
 
     const isRetryable = res.status === 429 || res.status === 503;
