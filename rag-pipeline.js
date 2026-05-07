@@ -85,9 +85,11 @@ async function callLLM(prompt, options = {}) {
   return llmBreaker.execute(async () => {
     return withRetry(async () => {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
-
+      let timeoutId;
+      
       try {
+        timeoutId = setTimeout(() => controller.abort(), timeout);
+        
         const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -113,7 +115,7 @@ async function callLLM(prompt, options = {}) {
         }
         throw err;
       } finally {
-        clearTimeout(timeoutId);
+        if (timeoutId) clearTimeout(timeoutId);
       }
     }, 3, 1000);
   });
@@ -188,9 +190,11 @@ function formatResponse(answer, sources, confidence) {
 
 // ========== Embedding avec robustesse ==========
 async function embedText(text) {
+  const controller = new AbortController();
+  let timeoutId;
+  
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    timeoutId = setTimeout(() => controller.abort(), 15000);
 
     const response = await fetch('https://api.mistral.ai/v1/embeddings', {
       method: 'POST',
@@ -214,7 +218,7 @@ async function embedText(text) {
     }
     throw err;
   } finally {
-    clearTimeout(timeoutId);
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }
 
