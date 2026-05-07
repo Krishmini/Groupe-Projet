@@ -1,103 +1,301 @@
-# Mini-Perplexity — Agent IA multi-outils + RAG
+# 🤖 Mini-Perplexity — Pipeline RAG Robuste + Cost Tracking
 
-Projet pédagogique IPSSI — Jour 3 : construction d'un agent IA avec boucle agentique, outils externes et vector store Pinecone.
-
----
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                     AGENT HYBRIDE                        │
-│                                                          │
-│  Question utilisateur                                    │
-│         ▼                                                │
-│  [ LLM Mistral ] lit la question + 5 descriptions        │
-│         ▼                                                │
-│  ┌──────────┬────────────┬────────────┬────────────┐    │
-│  │calculate │ get_weather│ web_search │ rag_search │    │
-│  │(calculs) │(météo live)│ (DuckDuckGo│ (Pinecone) │    │
-│  └──────────┴────────────┴────────────┴────────────┘    │
-│         ▼                                                │
-│  Réponse finale avec sources                             │
-└──────────────────────────────────────────────────────────┘
-```
+Projet pédagogique IPSSI — Finalization : construction d'un mini-moteur de recherche type Perplexity.ai avec gestion d'erreurs, retry exponentiel, confidence scoring et tracking des coûts.
 
 ---
 
-## Structure du projet
+## 🎯 Architecture générale
+
+### Pipeline RAG (Retrieval-Augmented Generation)
 
 ```
-tool-ai-rag/
-├── agent-loop.js          # Boucle agentique partagée (runAgent)
-├── tools.js               # Outils partagés : calculate, get_weather, web_search, fetch_page
+┌─────────────────────────────────────────────────────────────────┐
+│                        MINI-PERPLEXITY                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1️⃣  RETRIEVAL (Pinecone Vector Store)                          │
+│      Question → Embedding → Similarity Search                   │
+│      ↓                                                           │
+│  2️⃣  CONFIDENCE SCORING                                         │
+│      topScore ≥ 0.75 ?                                          │
+│      ├─ OUI → Continuer                                         │
+│      └─ NON → Court-circuit, "Je ne sais pas"                  │
+│      ↓                                                           │
+│  3️⃣  GENERATION (Mistral LLM)                                   │
+│      Context + Prompt → réponse avec citations [Source N]      │
+│      ↓                                                           │
+│  4️⃣  COST TRACKING & FORMATTING                                 │
+│      [Stats] Input: X tokens | Output: Y tokens | Cost: $Z      │
+│      + Footer de transparence + sources                         │
+│      ↓                                                           │
+│  5️⃣  ERROR HANDLING (Circuit Breaker + Retry)                   │
+│      429/503 → Retry exponentiel (2^attempt * 1s + random)      │
+│      5 échecs → Circuit ouvert pour 30s                         │
+│      Timeout → "Timeout LLM après Xms"                          │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📦 Structure du projet
+
+```
+mini-perplexity/
+├── rag-pipeline.js         # Cœur du RAG (phases 1-7)
+│   ├── CircuitBreaker        (Phase 1)
+│   ├── withRetry             (Phase 1)
+│   ├── calculateCost          (Phase 2)
+│   ├── computeConfidence      (Phase 3)
+│   ├── formatResponse         (Phase 5)
+│   └── ragQuery               (Orchestrateur)
 │
-├── calculatrice-agent.js  # Phase 1 — calculatrice seule
-├── weather-agent.js       # Phase 2 — météo + calculatrice
-├── search-agent.js        # Phase 3 — web search + fetch_page + météo + calculatrice
-├── chat-agent.js          # Phase 4 — mémoire de conversation (chatWithAgent)
-│
-├── vector-store.js        # Phases 5-8 — Pinecone : connexion, embed, upsert, RAG
-├── hybrid-agent.js        # Phase 9 — agent hybride (4 outils + rag_search)
-│
-└── .env                   # Clés API (ne pas commiter)
+├── vector-store.js         # Pinecone : embed, upsert, query
+├── test-phases.js          # Suite de tests (phases 1-5)
+├── red-teaming.md          # Tests adversariaux (phase 6)
+├── .env                    # Variables de config
+├── package.json            # Dépendances
+└── corpus/
+    └── speech.txt          # Documents sources
 ```
 
 ---
 
-## Prérequis
+## ⚙️ Prérequis
 
-- Node.js ≥ 18
-- Compte [Mistral AI](https://console.mistral.ai) avec clé API
-- Compte [Pinecone](https://app.pinecone.io) avec un index `mini-perplexity` (dimension 1024, métrique cosine)
+- **Node.js** ≥ 18
+- **Compte Mistral AI** avec clé API
+  - Modèles utilisés : `mistral-small-latest` (génération), `mistral-embed` (embedding)
+- **Compte Pinecone** avec index `mini-perplexity`
+  - Dimension : 1024
+  - Métrique : cosine
+- **.env** configuré (voir section Installation)
 
 ---
 
-## Installation
+## 🚀 Installation
 
 ```bash
-# 1. Cloner le projet
-git clone <url-du-repo>
-cd tool-ai-rag
-
-# 2. Installer les dépendances
+# 1. Cloner et dépendances
+git clone <url>
+cd mini-perplexity
 npm install
 
-# 3. Créer le fichier .env
+# 2. Configurer les clés API
 cp .env.example .env
-# Puis remplir les valeurs dans .env
+# ⬇️ Éditer .env avec vos clés
 ```
 
 ### Variables d'environnement (`.env`)
 
 ```env
+# API Mistral
 MISTRAL_API_KEY=votre_cle_mistral
+
+# Pinecone
 PINECONE_API_KEY=votre_cle_pinecone
 PINECONE_INDEX_NAME=mini-perplexity
-PINECONE_INDEX_HOST=https://mini-perplexity-xxxx.svc.aped-xxxx.pinecone.io
+PINECONE_INDEX_HOST=https://mini-perplexity-xxxxx.svc.aped-xxxxx.pinecone.io
+PINECONE_ENVIRONMENT=us-east-1
+
+# RAG Configuration
+CONFIDENCE_THRESHOLD=0.75  # Seuil de confiance pour l'early exit
 ```
 
 ---
 
-## Lancer les phases
+## 📚 Comment ça marche
 
-### Track A — Agent multi-outils
+### Exemple 1 : Question dans le corpus ✅
 
 ```bash
-# Phase 1 : calculatrice
-npm run calculatrice
-# Attendu : "17 au carré vaut 289, et 4 à la puissance 5 vaut 1024. Donc 289 + 1024 = 1313."
+node test-phases.js
+```
 
-# Phase 2 : météo + conversion Fahrenheit
-npm run weather
-# Attendu : "À Londres, il fait X°C (Y°F)..."
+**Question :** "Quels sont les bénéfices scientifiques d'une sieste de 20 minutes ?"
 
-# Phase 3 : web search + calcul de jours
-npm run search
-# Attendu : version Node.js + 856 jours depuis le 1er janvier 2024. Sources : [url]
+**Résultat attendu :**
+```
+[ragQuery] "Quels sont les bénéfices..."
+  Retrieval: 5 chunks (45ms) | TopScore: 0.89
+  Confiance contextuelle : 89% (top match: 0.89, moyenne top-3: 0.87)
+  Génération: 230ms | Tokens: 450 (input) + 120 (output)
+  [Stats] Input: 450 tokens | Output: 120 tokens | Coût: $0.0003 | Session total: $0.0003
 
-# Phase 4 : mémoire de conversation
-npm run chat
+✅ Réponse avec sources + footer disclaimer
+```
+
+---
+
+### Exemple 2 : Question hors corpus ❌
+
+```
+[ragQuery] "Quel est le prix du Bitcoin en décembre 2024 ?"
+  Confiance : 42% (seuil: 75%) → Court-circuit
+  
+Je ne dispose pas d'informations suffisantes...
+⚠️ Score de pertinence contextuelle : 42%
+```
+
+**Coût session :** $0.0000 (pas d'appel LLM = économie garantie)
+
+---
+
+### Exemple 3 : Timeout réseau ⏱️
+
+```
+[ragQuery] "Quelle est la meilleure pratiqu..."
+❌ ragQuery error: Timeout LLM après 30000ms
+
+Erreur technique lors du traitement...
+```
+
+---
+
+## 🧪 Tests
+
+### Suite de validation (phases 1-5)
+
+```bash
+npm run test
+# Lance test-phases.js avec 4 tests clés
+```
+
+**Tests inclus :**
+1. ✅ **Happy path** — question normale avec réponse complète
+2. 💰 **Cost tracking** — vérification des calculs de coût
+3. 🎯 **Confidence scoring** — 3 cas de confiance différente
+4. 🚫 **Early exit** — court-circuit si confiance insuffisante
+
+### Red teaming (phase 6)
+
+Voir [red-teaming.md](red-teaming.md) pour la suite d'attaques adversarielles et les correctifs proposés.
+
+---
+
+## 🔧 Configuration avancée
+
+### Modifier le seuil de confiance
+
+Plus **bas** (ex: 0.60) = pipeline indulgente, plus d'hallucinations
+Plus **haut** (ex: 0.85) = pipeline pessimiste, plus de "je ne sais pas"
+
+```env
+CONFIDENCE_THRESHOLD=0.75  # Défaut recommandé
+```
+
+### Modifier le timeout LLM
+
+```javascript
+// Dans rag-pipeline.js, fonction ragQuery()
+const result = await generateCompletion(question, chunks);
+// timeout actuellement : 30000ms
+```
+
+---
+
+## 📊 Métriques observées
+
+Chaque réponse retourne :
+
+```json
+{
+  "metrics": {
+    "topScore": 0.89,           // Similarité du meilleur match
+    "avgScore": 0.87,           // Moyenne des top-3
+    "totalMs": 450,             // Temps total end-to-end
+    "costUSD": 0.0003,          // Coût de CETTE requête
+    "sessionTotal": 0.0015,     // Coût cumulé de la session
+    "tokens": {
+      "prompt": 450,
+      "completion": 120
+    },
+    "shortCircuit": false       // True = court-circuit par confiance
+  }
+}
+```
+
+---
+
+## 🛡️ Garde-fous implémentés
+
+| Phase | Mécanisme | Bénéfice |
+|-------|-----------|----------|
+| 1 | Circuit Breaker + Retry exponentiel | Récupération automatique des erreurs réseau |
+| 2 | Cost tracking en temps réel | Maîtrise du budget API |
+| 3-4 | Confidence scoring + early exit | Pas d'appel LLM inutile si confiance ≤ seuil |
+| 5 | Disclaimer + sources obligatoires | Transparence de l'IA |
+| 6 | Red teaming + tests adversariaux | Identification des failles avant prod |
+
+---
+
+## 📝 Scénario de démo complet
+
+```bash
+# 1. Question simple (corpus)
+Question: "Quels sont les bénéfices d'une sieste ?"
+→ Réponse normale avec sources et coût
+
+# 2. Question impossible (hors corpus)
+Question: "Quel est le prix du Bitcoin ?"
+→ "Je ne dispose pas d'informations"
+→ Coût session = $0.0000
+
+# 3. Question longue (stress test)
+Question: "Écris-moi un essai sur les techniques de sieste"
+→ max_tokens limité, disclaimer sur longueur
+→ Coût contrôlé
+```
+
+---
+
+## 🚨 Troubleshooting
+
+### `Cannot read property 'matches' of undefined`
+→ Index Pinecone vide ou URL erronée. Vérifier `.env` et exécuter `npm run upsert`
+
+### `Timeout LLM après 30000ms`
+→ Vérifier la connexion réseau, réessayer. Le retry automatique devrait gérer les 429/503.
+
+### `Circuit ouvert` (trop d'erreurs)
+→ Circuit Breaker protège l'API. Attendre 30s avant de réessayer.
+
+### Coût session anormalement élevé
+→ Vérifier la tarification du modèle utilisé. `mistral-small-latest` ($0.2/1M input, $0.6/1M output) vs `mistral-large-latest` ($2/1M input, $6/1M output)
+
+---
+
+## 📄 Fichiers clés
+
+- **[rag-pipeline.js](rag-pipeline.js)** — Orchestrateur RAG complet
+- **[test-phases.js](test-phases.js)** — Suite de tests phases 1-5
+- **[red-teaming.md](red-teaming.md)** — Documentation attaques adversarielles
+- **[eval-table.md](eval-table.md)** — Baseline de 10 questions de référence
+
+---
+
+## 🎓 Phases implémentées
+
+- ✅ **Phase 1** — Error handling, retry exponentiel, circuit breaker
+- ✅ **Phase 2** — Estimation du coût avec tracker session
+- ✅ **Phase 3** — Confidence scoring (topScore, avgScore)
+- ✅ **Phase 4** — Comportement "Je ne sais pas" avec seuil configurable
+- ✅ **Phase 5** — Disclaimer et transparence (footer + sources)
+- ✅ **Phase 6** — Red teaming (documentation + attaques)
+- ✅ **Phase 7** — Polish final (README + clean code)
+
+---
+
+## 📌 Notes de déploiement
+
+- **Ne pas commiter** `.env` avec les clés API
+- **Configurer** `CONFIDENCE_THRESHOLD` en fonction de votre corpus (0.60-0.85)
+- **Monitorer** les coûts via les logs `[Stats]` en production
+- **Alerter** si `[CircuitBreaker] Circuit ouvert` apparaît (indique une panne API persistante)
+
+---
+
+**Mini-Perplexity v1 — Ready to ship 🚀**
 # Attendu : Paris → Lyon → comparaison, puis checkpoint sécurité
 ```
 

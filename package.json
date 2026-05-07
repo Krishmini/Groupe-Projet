@@ -10,7 +10,9 @@
     "chat": "node chat-agent.js",
     "vector-store": "node vector-store.js",
     "hybrid": "node hybrid-agent.js",
-    "coding": "node coding-agent.js"
+    "coding": "node coding-agent.js",
+    "test": "node test-phases.js",
+    "rag": "node -e \"import('./rag-pipeline.js').then(m => m.ragQuery('Quels sont les bénéfices scientifiques d\\'une sieste de 20 minutes ?', { topK: 5, verbose: true })).catch(console.error)\""
   },
   "keywords": [],
   "author": "",
