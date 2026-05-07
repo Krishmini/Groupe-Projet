@@ -1,4 +1,4 @@
-// query.js — Pipeline de retrieval : embed la question + interroge Pinecone
+// retrieval.js — Module de retrieval sémantique : embed question + query Pinecone + filtrage (Phase 4)
 // Utilisé par agent.js et eval.js.
 import {
   MISTRAL_API_KEY,

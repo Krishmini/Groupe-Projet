@@ -1,4 +1,4 @@
-// agent.js — Couche LLM : génération RAG avec observability (Phase 5-6)
+// rag-pipeline.js — Pipeline RAG principal : retrieval + génération + citations + métriques (Phase 5-6-7)
 import { retrieveContext }  from './retrieval.js';
 import {
   MISTRAL_API_KEY, CHAT_MODEL, MAX_CONTEXT_CHARS,

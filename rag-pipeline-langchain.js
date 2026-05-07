@@ -7,7 +7,7 @@ import { ChatPromptTemplate }          from '@langchain/core/prompts';
 import { StructuredOutputParser }      from '@langchain/core/output_parsers';
 import { Pinecone }                    from '@pinecone-database/pinecone';
 import { z }                           from 'zod';
-import { formatSourceCitations }       from './agent.js';
+import { formatSourceCitations }       from './rag-pipeline.js';
 import {
   MISTRAL_API_KEY, PINECONE_API_KEY,
   PINECONE_INDEX_NAME, PINECONE_NAMESPACE,

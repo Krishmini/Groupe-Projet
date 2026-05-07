@@ -1,5 +1,5 @@
 // test-compare.js — Comparaison ragQuery (manuel) vs ragQueryLangChain (Phase 9)
-import { ragQuery }          from './agent.js';
+import { ragQuery }          from './rag-pipeline.js';
 import { ragQueryLangChain } from './rag-pipeline-langchain.js';
 
 const TESTS = [

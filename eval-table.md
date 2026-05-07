@@ -34,3 +34,5 @@
 - **Avg top-3** : moyenne des 3 meilleurs scores. Qualité globale du contexte injecté.
 - **Pertinence (1-5)** : note humaine — les chunks récupérés sont-ils liés à la question ?
 - **Fidélité (1-5)** : note humaine — la réponse reflète-t-elle les sources sans broder/inventer ?
+
+---
