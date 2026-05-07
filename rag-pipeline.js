@@ -299,7 +299,7 @@ export async function ragQuery(question, options = {}) {
   const chunks = await retrieveContext(question, topK, scoreThreshold);
   const retrievalMs = Math.round(performance.now() - t0);
 
-  // ─── Confidence (J5 Phase 3) ────────
+  // ─── Confidence ────────
   const confidence = computeConfidence(chunks);
 
   if (verbose) {
@@ -308,6 +308,33 @@ export async function ragQuery(question, options = {}) {
     for (const c of chunks) {
       console.log(`  [${c.score}] ${c.source}, "${c.text.slice(0, 60)}..."`);
     }
+  }
+
+  // Si confidence insuffisante → skip LLM, réponse standardisée, coût = 0
+  if (!confidence.sufficient) {
+    console.log(`[skip-llm] Confidence insuffisante (topScore=${confidence.topScore} < ${CONFIDENCE_THRESHOLD}) — LLM non appelé`);
+
+    const sources = formatSourceCitations(chunks);
+    const metrics = {
+      topScore: confidence.topScore,
+      avgScore: confidence.avgScore,
+      confidence,
+      retrievalMs,
+      generationMs: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      costUSD: 0,
+      orphanCitations: [],
+      skippedLLM: true
+    };
+
+    return {
+      answer: "Je ne dispose pas d'informations suffisamment fiables dans les documents fournis pour répondre à cette question.",
+      sources,
+      chunksUsed: chunks.length,
+      chunks,
+      metrics
+    };
   }
 
   // ─── Génération (Phase 5) ──────
