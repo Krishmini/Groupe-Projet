@@ -1,7 +1,6 @@
 import 'dotenv/config';
 
-// ─── Validation des variables d'environnement obligatoires ───────────────────
-
+// Validation des variables d'environnement obligatoires
 const REQUIRED_VARS = ['MISTRAL_API_KEY', 'PINECONE_API_KEY', 'PINECONE_INDEX_NAME', 'PINECONE_INDEX_HOST'];
 
 for (const key of REQUIRED_VARS) {
@@ -35,16 +34,14 @@ export const TOP_K             = 5;     // nombre de chunks retournés par Pinec
 export const SCORE_THRESHOLD   = 0.7;   // score cosine minimum — en dessous = non pertinent
 export const MAX_CONTEXT_CHARS = 4000;  // limite de contexte injectée dans le prompt (~1000 tokens)
 
-// ─── Confidence ─────────
-
+// Confidence (J5 Phase 3) — skip LLM si topScore < seuil
 export const CONFIDENCE_THRESHOLD = parseFloat(process.env.CONFIDENCE_THRESHOLD || '0.75');
 
-// ─── Retry (429 / 503) ───────────────
-
+// Retry sur 429/503
 export const MAX_RETRIES   = 4;
-export const RETRY_BASE_MS = 5000; // backoff : 5s, 10s, 15s, 20s
+export const RETRY_BASE_MS = 5000;
 
-// ─── Fichiers ─────────────────
+// Fichiers
 
 export const QUESTIONS_FILE = './questions-test.txt';
 export const CORPUS_DIR     = './corpus';

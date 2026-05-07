@@ -37,13 +37,11 @@ let _chain = null;
 async function getChain() {
   if (_chain) return _chain;
 
-  // 1. Embeddings Mistral
   const embeddings = new MistralAIEmbeddings({
     apiKey: MISTRAL_API_KEY,
     model:  'mistral-embed'
   });
 
-  // 2. Pinecone vector store (index existant)
   const pinecone      = new Pinecone({ apiKey: PINECONE_API_KEY });
   const pineconeIndex = pinecone.index(PINECONE_INDEX_NAME);
 
@@ -52,10 +50,8 @@ async function getChain() {
     namespace: PINECONE_NAMESPACE
   });
 
-  // 3. Retriever
   const retriever = vectorStore.asRetriever({ k: TOP_K });
 
-  // 4. LLM
   const llm = new ChatMistralAI({
     apiKey:      MISTRAL_API_KEY,
     model:       CHAT_MODEL,
@@ -63,14 +59,14 @@ async function getChain() {
     maxTokens:   512
   });
 
-  // 5. Prompt — on injecte le contexte avec labels [Source N]
+  //  Prompt — on injecte le contexte avec labels [Source N]
   //    {context} est rempli par createStuffDocumentsChain (concatenation des docs)
   const prompt = ChatPromptTemplate.fromMessages([
     ['system', SYSTEM_PROMPT + '\n\n<context>\n{context}\n</context>'],
     ['human',  '{input}']
   ]);
 
-  // 6. Stuff chain (concatène les documents dans {context})
+  // Stuff chain (concatène les documents dans {context})
   const stuffChain = await createStuffDocumentsChain({ llm, prompt });
 
   // 7. Retrieval chain = retriever + stuff chain
