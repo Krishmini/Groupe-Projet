@@ -84,7 +84,7 @@ async function queryPinecone(vector, topK) {
  * @param {number} [topK]       — nombre de résultats demandés à Pinecone
  * @returns {Promise<Array<{ text: string, source: string, score: number, chunkIndex: number|null }>>}
  */
-export async function retrieveContext(query, topK = TOP_K) {
+export async function retrieveContext(query, topK = TOP_K, scoreThreshold = SCORE_THRESHOLD) {
   try {
     const question = sanitizeQuestion(query);
 
@@ -97,7 +97,7 @@ export async function retrieveContext(query, topK = TOP_K) {
 
     // 5. Filtrage par score + extraction des métadonnées utiles
     return (data.matches || [])
-      .filter(m => m.score >= SCORE_THRESHOLD)
+      .filter(m => m.score >= scoreThreshold)
       .map(m => ({
         text:       m.metadata?.text       || '',
         source:     m.metadata?.source     || 'inconnu',

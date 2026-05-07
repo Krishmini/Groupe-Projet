@@ -1,9 +1,9 @@
 // cli.js — Interface CLI interactive Mini-Perplexity (Phase 10)
 // Usage : node cli.js
 import { createInterface } from 'readline';
-import { ragQuery }        from './agent.js';
+import { ragQuery }        from './rag-pipeline.js';
 
-// ─── Prompt utilisateur via Promise ──────────────────────────────────────────
+// ─── Prompt utilisateur via Promise ─────────
 
 function createCLI() {
   const rl = createInterface({
@@ -27,7 +27,7 @@ function createCLI() {
   return { rl, prompt };
 }
 
-// ─── Formatage de la réponse ─────────────────────────────────────────────────
+// ─── Formatage de la réponse ───────────────────
 
 function formatResponse(result) {
   const lines = [];
@@ -57,8 +57,7 @@ function formatResponse(result) {
   return lines.join('\n');
 }
 
-// ─── Boucle principale ──────────────────────────────────────────────────────
-
+// ─── Boucle principale ───────────
 async function main() {
   console.log('═'.repeat(60));
   console.log('  Mini-Perplexity — posez vos questions sur le corpus');

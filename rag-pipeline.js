@@ -1,5 +1,5 @@
 // agent.js — Couche LLM : génération RAG avec observability (Phase 5-6)
-import { retrieveContext }  from './query.js';
+import { retrieveContext }  from './retrieval.js';
 import {
   MISTRAL_API_KEY, CHAT_MODEL, MAX_CONTEXT_CHARS,
   MAX_RETRIES, RETRY_BASE_MS
@@ -159,13 +159,13 @@ export async function generateCompletion(query, context) {
  * @returns {{ answer: string, sources: string[], chunks: object[], metrics: object }}
  */
 export async function ragQuery(question, options = {}) {
-  const { topK = 5, verbose = false } = options;
+  const { topK = 5, verbose = false, scoreThreshold } = options;
 
   if (verbose) console.log(`[ragQuery] question="${question.slice(0, 80)}..."`);
 
   // ─── Retrieval (Phase 4) ────────
   const t0 = performance.now();
-  const chunks = await retrieveContext(question, topK);
+  const chunks = await retrieveContext(question, topK, scoreThreshold);
   const retrievalMs = Math.round(performance.now() - t0);
 
   const scores   = chunks.map(c => c.score);

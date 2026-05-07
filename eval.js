@@ -3,7 +3,7 @@
 //         node eval.js --verbose      (affiche les chunks récupérés)
 //         node eval.js --dry          (affiche sans régénérer le fichier)
 import { readFileSync, writeFileSync } from 'fs';
-import { ragQuery }       from './agent.js';
+import { ragQuery }       from './rag-pipeline.js';
 import { QUESTIONS_FILE } from './config.js';
 
 // ─── Parsing de questions-test.txt ────────
