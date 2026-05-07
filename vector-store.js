@@ -98,6 +98,45 @@ export async function searchSimilar(question, topK = 3) {
   }));
 }
 
+// ─── Phase 4 : retrieveContext(query) ─────────────────────────────────────
+// Retourne [{ text, source, score, chunkIndex }], filtré score >= 0.5
+export async function retrieveContext(query, topK = 5) {
+  // Gestion d'une query vide : on retourne [] (le service d'embeddings peut
+  // refuser d'embeder une chaîne vide). Ceci évite une stack trace côté appelant.
+  if (!query || String(query).trim().length === 0) {
+    return [];
+  }
+
+  // Embedde la query
+  let vector;
+  try {
+    vector = await getEmbedding(query);
+  } catch (err) {
+    // Retourne [] si l'embedding échoue pour une raison liée au contenu
+    // (ex: texte vide). Remonter l'erreur sinon.
+    if (String(err.message).toLowerCase().includes('empty') || String(err.message).toLowerCase().includes('input')) {
+      return [];
+    }
+    throw err;
+  }
+
+  // Requête Pinecone
+  const data = await pineconeRequest('/query', { vector, topK, includeMetadata: true });
+  const matches = data.matches || [];
+
+  // Filtre par score (>= 0.5) et mappe sur la forme demandée
+  const results = matches
+    .filter(m => typeof m.score === 'number' && m.score >= 0.5)
+    .map(m => ({
+      text:       m.metadata?.text ?? '',
+      source:     m.metadata?.source ?? m.metadata?.source ?? 'unknown',
+      score:      m.score,
+      chunkIndex: m.metadata?.chunkIndex ?? null
+    }));
+
+  return results;
+}
+
 // ─── Phase 8 : RAG complet ───────────
 
 export async function ragQuery(question) {
@@ -134,6 +173,31 @@ import { fileURLToPath } from 'url';
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 
 if (isMain) {
+  // --- Tests pour Phase 4 : retrieveContext
+  console.log('\n--- Phase 4 tests : retrieveContext ---');
+  try {
+    const ctx1 = await retrieveContext('Comment gérer les erreurs dans un stream ?');
+    console.log('ctx1 length =', ctx1.length);
+    ctx1.forEach(c => console.log(`  [${c.score.toFixed(2)}] ${c.source} #${c.chunkIndex}`));
+  } catch (e) {
+    console.error('ctx1 failed :', e.message);
+  }
+
+  try {
+    const ctx2 = await retrieveContext('');
+    console.log('ctx2 length =', ctx2.length);
+  } catch (e) {
+    console.error('ctx2 failed :', e.message);
+  }
+
+  try {
+    const ctx3 = await retrieveContext("Quelle est la capitale du Pérou ?");
+    console.log('ctx3 length =', ctx3.length);
+    ctx3.forEach(c => console.log(`  [${c.score.toFixed(2)}] ${c.source} #${c.chunkIndex}`));
+  } catch (e) {
+    console.error('ctx3 failed :', e.message);
+  }
+
   const CORPUS = `
 Node.js est un environnement d'exécution JavaScript côté serveur, créé par Ryan Dahl en 2009.
 Il utilise le moteur V8 de Google Chrome pour exécuter du JavaScript hors du navigateur.
