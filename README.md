@@ -26,7 +26,7 @@ Groupe-Projet/
 ├── test-compare.js            Comparaison manual vs LangChain
 ├── corpus/                    Documents source
 ├── questions-test.txt         Questions de test
-└── red-teaming.md             Tests adversariaux
+├── red-teaming.md             Tests adversariaux (4/5 bloquées, 1 corrigée post-LLM)
 ```
 
 ---
@@ -39,6 +39,7 @@ npm install && cp .env.example .env && npm run index   # setup
 npm run cli              # CLI interactive
 npm run ask -- "question"
 npm run eval             # 10 questions → eval-table.md (Top-1: 0.80, Fidélité: 4.4/5)
+npm run eval:verbose     # idem + détail chunks et métriques par question
 npm run audit:quick      # 4 variantes retrieval, régressions auto
 node test-compare.js     # manual vs LangChain (3 scénarios)
 ```
@@ -53,7 +54,7 @@ Prérequis : Node.js ≥ 18, Mistral AI, Pinecone (1024 dim, cosine).
 2. **Confidence** — topScore < 0.75 → skip LLM, coût $0, ~300ms
 3. **Génération** — CircuitBreaker (5 fails → OPEN 30s → auto-recovery) + retry 429/503 (2^n + jitter) + timeout 30s
 4. **Post-traitement** — citations dédupliquées + orphan detection + calcul coût (~$0.0002/req)
-5. **Output** — réponse + sources + disclaimer
+5. **Output** — réponse + sources + disclaimer + métriques (topScore, tokens, coût, latence)
 
 ---
 
@@ -83,4 +84,4 @@ Prérequis : Node.js ≥ 18, Mistral AI, Pinecone (1024 dim, cosine).
 
 ---
 
-Node.js ESM ≥ 18 | Mistral (`mistral-embed` + `mistral-small-latest`) | Pinecone v7.2 | LangChain v0.3 | ISC
+Node.js ESM ≥ 18 | Mistral (`mistral-embed` + `mistral-small-latest`) | Pinecone v7.2 | LangChain v0.3 | 
