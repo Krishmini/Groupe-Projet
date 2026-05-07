@@ -88,6 +88,7 @@ Groupe-Projet/
 │
 ├── questions-test.txt       # 10 questions d'évaluation (Q1–Q10)
 ├── eval-table.md            # Résultats baseline + audit Phase 11
+├── red-teaming.md           # Résultats des tests adversariaux (J5 Phase 6)
 │
 ├── .env                     # Variables d'environnement (non commité)
 ├── .env.example             # Template des variables requises
@@ -137,6 +138,7 @@ npm run index
 | `PINECONE_INDEX_NAME` | Nom de l'index Pinecone (ex: `mini-perplexity`) | ✅ |
 | `PINECONE_INDEX_HOST` | URL complète de l'index Pinecone | ✅ |
 | `PINECONE_NAMESPACE` | Namespace pour isoler les datasets (défaut: `default`) | ❌ |
+| `CONFIDENCE_THRESHOLD` | Seuil de confiance pour skip LLM (défaut: `0.75`) | ❌ |
 
 ```env
 MISTRAL_API_KEY=votre_cle_mistral
@@ -155,6 +157,7 @@ PINECONE_NAMESPACE=option-c-groupe-1
 | `MAX_CONTEXT_CHARS` | 4000 | Limite du contexte injecté dans le prompt |
 | `MAX_RETRIES` | 4 | Nombre de retries sur 429/503 |
 | `RETRY_BASE_MS` | 5000 | Backoff de base entre retries |
+| `CONFIDENCE_THRESHOLD` | 0.75 | Score minimum pour appeler le LLM (sinon skip) |
 
 ---
 
@@ -242,10 +245,16 @@ Compare les résultats du pipeline manuel (`ragQuery`) avec le pipeline LangChai
 
 | Scénario | Comportement attendu |
 |----------|---------------------|
-| Question dans le corpus | Réponse sourcée avec `[Source N]`, pertinence > 0.75 |
-| Question hors corpus | "Je ne trouve pas cette information dans les documents fournis." |
+| Question dans le corpus | Réponse sourcée avec `[Source N]`, pertinence > 0.75, footer disclaimer |
+| Question hors corpus | Skip LLM (confidence < 0.75), message "je ne dispose pas...", coût $0 |
 | Prompt injection | Refus — même réponse que hors corpus |
 | Question vide | Aucun appel API, re-prompt immédiat |
+
+### Red teaming
+
+Voir [`red-teaming.md`](red-teaming.md) pour les résultats des 5 tests adversariaux :
+- 4/5 attaques bloquées (hallucination, leak system prompt, budget, PII)
+- 1 attaque passée (omission des sources) + correctif identifié
 
 ---
 
@@ -259,7 +268,10 @@ Compare les résultats du pipeline manuel (`ragQuery`) avec le pipeline LangChai
 | **Sanitisation input** | Suppression caractères de contrôle, limite 500 chars, trim | `retrieval.js` |
 | **Anti-hallucination** | Citation obligatoire `[Source N]`, détection citations orphelines, réponse "je ne sais pas" si hors contexte | `rag-pipeline.js` |
 | **Clés API** | Vérification au démarrage — arrêt immédiat si manquantes | `config.js` |
-| **Rate limiting** | Retry avec backoff exponentiel sur 429/503 (max 4 tentatives) | `retrieval.js`, `rag-pipeline.js` |
+| **Rate limiting** | Retry exponentiel (2^n × baseDelay + jitter) sur 429/503 | `rag-pipeline.js` |
+| **Circuit Breaker** | Après 5 échecs consécutifs, refuse les requêtes pendant 30s (auto-recovery) | `rag-pipeline.js` |
+| **Timeout** | AbortController coupe les requêtes LLM après 30s | `rag-pipeline.js` |
+| **Confidence gate** | Si topScore < 0.75, skip LLM entièrement (coût $0, pas d'hallucination) | `rag-pipeline.js` |
 | **Contexte limité** | `MAX_CONTEXT_CHARS=4000` empêche l'injection de contexte trop volumineux | `config.js` |
 | **Données sensibles** | `.env` dans `.gitignore`, corps HTTP d'erreur non exposé dans les messages | `.gitignore`, `retrieval.js` |
 | **Template injection** | Échappement `{}` → `{{}}` dans le contexte LangChain pour éviter l'interprétation comme variable | `rag-pipeline-langchain.js` |
@@ -297,6 +309,11 @@ Le system prompt impose 7 règles absolues :
 | `mistral-embed` | $0.10 / 1M tokens | — |
 
 Coût typique pour 10 questions d'évaluation : ~$0.0015
+
+Chaque requête affiche automatiquement le coût :
+```
+[Stats] Input: 1221 tokens | Output: 219 tokens | Coût: $0.0002 | Session total: $0.0004
+```
 
 ### Chunking
 

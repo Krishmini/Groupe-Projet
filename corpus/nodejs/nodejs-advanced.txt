@@ -1,0 +1,28 @@
+Node.js Concepts Avancés
+
+Worker Threads :
+Le module worker_threads permet d'exécuter du JavaScript en parallèle sur plusieurs threads. Contrairement à child_process, les workers partagent la mémoire via SharedArrayBuffer. Utile pour les calculs CPU-intensifs sans bloquer l'event loop.
+
+Exemple :
+import { Worker } from 'worker_threads';
+const worker = new Worker('./heavy-task.js');
+worker.on('message', (result) => console.log(result));
+
+Cluster :
+Le module cluster permet de créer plusieurs processus Node.js qui partagent le même port réseau. Le processus master distribue les connexions entrantes aux workers via round-robin.
+
+Event Loop :
+L'event loop Node.js traite les callbacks dans cet ordre :
+1. Timers (setTimeout, setInterval)
+2. Pending callbacks (I/O reportés)
+3. Poll (I/O nouvelles)
+4. Check (setImmediate)
+5. Close callbacks (socket.on('close'))
+
+process.nextTick() s'exécute avant chaque phase. Les microtasks (Promises) s'exécutent après chaque macrotask.
+
+Buffer et performances :
+Buffer.alloc(size) crée un buffer initialisé à zéro (sécurisé). Buffer.allocUnsafe(size) est plus rapide mais peut contenir des données résiduelles en mémoire. En production, préférer alloc() sauf si la performance est critique et que le buffer sera immédiatement rempli.
+
+AsyncLocalStorage :
+Le module async_hooks fournit AsyncLocalStorage pour propager un contexte à travers les appels asynchrones sans le passer explicitement. Utile pour le tracing, les logs, et l'injection de contexte requête par requête dans un serveur HTTP.

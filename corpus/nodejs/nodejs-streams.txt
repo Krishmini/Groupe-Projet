@@ -1,0 +1,22 @@
+Node.js Streams API
+
+Les streams Node.js permettent de traiter des données de manière incrémentale, sans charger tout le contenu en mémoire. Il existe quatre types de streams :
+
+Readable : flux en lecture. Exemples : fs.createReadStream(), http.IncomingMessage, process.stdin.
+Writable : flux en écriture. Exemples : fs.createWriteStream(), http.ServerResponse, process.stdout.
+Duplex : flux bidirectionnel (lecture + écriture). Exemple : net.Socket.
+Transform : flux duplex qui transforme les données en transit. Exemple : zlib.createGzip().
+
+Gestion des erreurs dans un stream :
+Chaque stream émet un événement 'error' en cas de problème. Il faut toujours écouter cet événement pour éviter un crash du processus :
+stream.on('error', (err) => console.error('Erreur stream:', err.message));
+
+La méthode pipeline() du module stream gère automatiquement la propagation des erreurs et le nettoyage des ressources :
+import { pipeline } from 'stream/promises';
+await pipeline(source, transform, destination);
+
+Backpressure :
+Quand un writable stream ne peut pas consommer les données assez vite, il signale au readable de ralentir. C'est le mécanisme de backpressure. La méthode write() retourne false quand le buffer interne est plein, et l'événement 'drain' signale que l'écriture peut reprendre.
+
+Modes de lecture :
+Un readable stream fonctionne en mode flowing (données poussées automatiquement via 'data') ou en mode paused (données tirées manuellement via read()). L'appel à pipe() ou l'écoute de 'data' active le mode flowing.
