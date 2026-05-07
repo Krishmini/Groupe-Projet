@@ -1,7 +1,7 @@
 // cli.js — Interface CLI interactive Mini-Perplexity (Phase 10)
 // Usage : node cli.js
 import { createInterface } from 'readline';
-import { ragQuery }        from './rag-pipeline.js';
+import { ragQuery, formatResponse } from './rag-pipeline.js';
 
 // ─── Prompt utilisateur via Promise ─────────
 
@@ -27,29 +27,15 @@ function createCLI() {
   return { rl, prompt };
 }
 
-// ─── Formatage de la réponse ───────────────────
+// ─── Formatage de la réponse (délègue à rag-pipeline.js J5 Phase 5) ─────────
 
-function formatResponse(result) {
+function formatCLIResponse(result) {
   const lines = [];
 
-  // Réponse
-  lines.push(result.answer);
+  // Réponse + sources + disclaimer (via formatResponse exporté)
+  lines.push(formatResponse(result.answer, result.sources, result.metrics.confidence));
 
-  // Sources
-  if (result.sources.length > 0) {
-    const files = result.sources.map(s => s.file).join(', ');
-    lines.push(`\nSources : [${files}]`);
-  }
-
-  // Pertinence moyenne (avg top-3)
-  if (result.chunks.length > 0) {
-    const sorted = result.chunks.map(c => c.score).sort((a, b) => b - a);
-    const top3   = sorted.slice(0, 3);
-    const avg    = (top3.reduce((a, b) => a + b, 0) / top3.length).toFixed(2);
-    lines.push(`Pertinence moyenne : ${avg}`);
-  }
-
-  // Métriques
+  // Métriques CLI
   const m = result.metrics;
   const totalMs = m.retrievalMs + m.generationMs;
   lines.push(`(${totalMs}ms | ${m.promptTokens} tokens in | $${m.costUSD})`);
@@ -85,7 +71,7 @@ async function main() {
 
     try {
       const result = await ragQuery(trimmed, { topK: 5, verbose: false });
-      console.log(formatResponse(result));
+      console.log(formatCLIResponse(result));
     } catch (err) {
       console.error(`  ⚠️  Erreur : ${err.message}`);
     }

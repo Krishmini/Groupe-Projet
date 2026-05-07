@@ -385,3 +385,40 @@ export async function ask(rawQuestion) {
   const contextFound = chunks.length > 0;
   return { question: rawQuestion, answer, contextFound, chunks, sources, chunksUsed, metrics };
 }
+
+// ─── formatResponse — Disclaimer + transparence (J5 Phase 5) ─────────────────
+
+const DISCLAIMER = `\n--\n*Réponse générée par IA à partir des documents fournis. Vérifiez les sources avant toute décision importante.*`;
+
+/**
+ * Formate la réponse avec sources, note de pertinence et footer disclaimer.
+ *
+ * @param {string} answer — réponse brute du LLM ou message "je ne sais pas"
+ * @param {Array<{ file?: string, source?: string, page?: number, url?: string }>} sources — metadata Pinecone
+ * @param {{ topScore: number, avgScore: number, sufficient: boolean }} confidence
+ * @returns {string} — réponse formatée avec footer
+ */
+export function formatResponse(answer, sources, confidence) {
+  const lines = [];
+
+  // Réponse
+  lines.push(answer);
+
+  // Sources
+  const safeSource = Array.isArray(sources) ? sources : [];
+  if (safeSource.length > 0) {
+    const fileList = safeSource.map(s => s.file || s.source || 'inconnu').join(', ');
+    lines.push(`\nSources : [${fileList}]`);
+  }
+
+  // Note pertinence si confidence < 0.80
+  if (confidence && confidence.topScore < 0.80) {
+    const pct = Math.round(confidence.topScore * 100);
+    lines.push(`⚠️  Score de pertinence contextuelle : ${pct}%`);
+  }
+
+  // Footer disclaimer (toujours présent)
+  lines.push(DISCLAIMER);
+
+  return lines.join('\n');
+}
