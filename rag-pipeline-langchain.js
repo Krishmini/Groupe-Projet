@@ -14,7 +14,6 @@ import {
   CHAT_MODEL, TOP_K
 } from './config.js';
 
-// ─── System prompt (identique à agent.js pour comparaison équitable) ─────────
 
 const SYSTEM_PROMPT =
 `Tu es un assistant de recherche documentaire strictement contraint.
@@ -136,10 +135,7 @@ export async function ragQueryLangChain(question) {
   };
 }
 
-// ─── Structured Output — variante avec Zod (bonus Phase 9) ──────────────────
-// Contrairement à ragQueryLangChain qui retourne du texte libre,
-// cette version force le LLM à retourner un JSON structuré validé par Zod.
-// Utile pour exposer le RAG via une API REST (les clients reçoivent du JSON, pas du texte).
+// ─── Structured Output — variante avec Zod (Phase 9) ──────────────────
 
 const ragOutputSchema = z.object({
   answer:     z.string().describe("La réponse à la question, en français"),
