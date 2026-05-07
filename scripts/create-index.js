@@ -1,4 +1,10 @@
-// create-index.js
+// create-index.js — RAG Pipeline : Indexation du corpus
+// ========================================================
+// Phase 2 : Chunking avec paramètres configurables
+// Phase 3 : Batch embed et indexation dans Pinecone
+//
+// Flux : corpus/ → chunking → embed Mistral → upsert Pinecone
+
 import { Pinecone } from '@pinecone-database/pinecone';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
@@ -6,46 +12,68 @@ import 'dotenv/config';
 
 const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
 
-const CHUNK_SIZE = 400;
-const OVERLAP = 50;
-const BATCH_SIZE = 50;
-const EMBED_CONCURRENCY = 5;
+// === PHASE 2 : Configuration du chunking ===
+export const CONFIG = {
+  chunkSize: 400,        // Taille des chunks en mots
+  overlap: 50,           // Recouvrement entre chunks (pour contexte)
+  batchSize: 50,         // Nombre de vecteurs à upsert en une fois (Pinecone)
+  embedConcurrency: 5,   // Parallélisme des appels embed (Mistral)
+};
 
-// --- Fonctions utilitaires ---
-
+// === PHASE 2 : Découpe le texte en chunks de chunkSize mots avec overlap ===
+// Cas tordus à tester :
+//   - Texte vide → retourne []
+//   - Texte court (< chunkSize) → retourne [texte entier]
+//   - overlap === chunkSize → détecte et lève une erreur
 function chunkWithOverlap(text, size, overlap) {
-  const words = text.split(' ');
+  // Validation
+  if (!text || !text.trim()) return []; // Cas tordu #1 : texte vide
+  if (overlap >= size) {
+    throw new Error(`overlap (${overlap}) doit être < chunkSize (${size}), sinon boucle infinie`);
+  }
+
+  const words = text.trim().split(/\s+/); // Split sur espaces multiples aussi
   const chunks = [];
   let i = 0;
+  
+  // Boucle : avance de (size - overlap) mots à chaque itération
   while (i < words.length) {
-    chunks.push(words.slice(i, i + size).join(' '));
-    i += size - overlap;
+    const chunk = words.slice(i, i + size).join(' ');
+    if (chunk.trim().length > 0) {
+      chunks.push(chunk);
+    }
+    i += size - overlap; // Avance de (size - overlap) pour recouvrementÂ
   }
-  return chunks.filter(c => c.trim().length > 0);
+  
+  return chunks;
 }
 
-async function embedText(text) {
-  const response = await fetch('https://api.mistral.ai/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.MISTRAL_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: 'mistral-embed',
-      input: text,
-    }),
-  });
+// === PHASE 2 : Tests des cas tordus ===
+// À lancer avant de pousser sur le corpus complet
+export function testChunking() {
+  console.log("\n🧪 Test 1 : Texte vide");
+  const empty = chunkWithOverlap("", CONFIG.chunkSize, CONFIG.overlap);
+  console.assert(empty.length === 0, "Doit retourner []");
+  console.log("  ✓ Passe");
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Mistral embedding error (${response.status}): ${error}`);
+  console.log("🧪 Test 2 : Texte court (< chunkSize)");
+  const short = chunkWithOverlap("hello world", CONFIG.chunkSize, CONFIG.overlap);
+  console.assert(short.length === 1 && short[0] === "hello world", "Doit retourner [texte entier]");
+  console.log("  ✓ Passe");
+
+  console.log("🧪 Test 3 : overlap === chunkSize (détection boucle infinie)");
+  try {
+    chunkWithOverlap("some text here", CONFIG.chunkSize, CONFIG.chunkSize);
+    console.error("  ✗ Aurait dû lever une erreur !");
+  } catch (err) {
+    console.log(`  ✓ Levé erreur attendue : ${err.message}`);
   }
-
-  const data = await response.json();
-  return data.data[0].embedding;
 }
 
+// === PHASE 3 : Appelle Mistral embed en batch ===
+// Retourne [ embedding[], embedding[], ... ] dans le même ordre que l'input
+// === PHASE 3 : Appelle Mistral embed en batch ===
+// Retourne [ embedding[], embedding[], ... ] dans le même ordre que l'input
 async function embedBatch(texts) {
   const response = await fetch('https://api.mistral.ai/v1/embeddings', {
     method: 'POST',
@@ -54,8 +82,8 @@ async function embedBatch(texts) {
       'Authorization': `Bearer ${process.env.MISTRAL_API_KEY}`,
     },
     body: JSON.stringify({
-      model: 'mistral-embed',
-      input: texts,           // tableau accepté directement par l'API
+      model: 'mistral-embed',  // Dimension 1024
+      input: texts,             // Accepte tableau
     }),
   });
 
@@ -65,78 +93,90 @@ async function embedBatch(texts) {
   }
 
   const data = await response.json();
-  // L'API retourne les embeddings dans le même ordre que l'input
+  // API retourne les embeddings dans le même ordre que l'input
   return data.data.map(item => item.embedding);
 }
 
-// --- Traitement d'un fichier ---
+// === PHASE 2 : Charge tous les .txt de dir, retourne [{ filename, text }] ===
+async function loadCorpus(dir) {
+  const files = readdirSync(dir)
+    .filter(f => f.endsWith('.txt') || f.endsWith('.md'))
+    .map(f => join(dir, f));
+  
+  return files.map(filePath => ({
+    filename: filePath.split('/').pop(),
+    text: readFileSync(filePath, 'utf-8'),
+  }));
+}
 
-async function processFile(filePath, indexName) {
+// === PHASE 3 : Vectorise les chunks et upsert dans Pinecone ===
+// Chaque vecteur : { id: `${filename}-chunk-${i}`, values, metadata }
+async function embedAndIndex(chunks, indexName) {
   const index = pinecone.index(indexName);
-  const text = readFileSync(filePath, 'utf-8');
-  const filename = filePath.split('/').pop();
+  let totalUpserted = 0;
 
-  console.log(`\n→ Traitement de ${filename}...`);
-
-  const rawChunks = chunkWithOverlap(text, CHUNK_SIZE, OVERLAP);
-  console.log(`  ${rawChunks.length} chunks créés`);
-
-  const vectors = [];
-
-  for (let i = 0; i < rawChunks.length; i += EMBED_CONCURRENCY) {
-    const batch = rawChunks.slice(i, i + EMBED_CONCURRENCY);
-
-    // Embedder tous les chunks du batch en un seul appel API (plus efficace)
-    const embeddings = await embedBatch(batch);
-
-    const batchVectors = batch.map((chunkText, j) => ({
-      id: `${filename}-chunk-${i + j}`,
-      values: embeddings[j],
+  // Découper chunks en sous-tableaux de taille embedConcurrency
+  for (let i = 0; i < chunks.length; i += CONFIG.embedConcurrency) {
+    const batchToEmbed = chunks.slice(i, i + CONFIG.embedConcurrency);
+    
+    // 1. Embedder ce batch de chunks
+    const embeddingsArray = await embedBatch(batchToEmbed.map(c => c.text));
+    
+    // 2. Construire les vecteurs avec métadonnées
+    const vectors = batchToEmbed.map((chunk, j) => ({
+      id: `${chunk.filename}-chunk-${chunk.index}`,
+      values: embeddingsArray[j],
       metadata: {
-        text: chunkText,
-        source: filename,
-        chunkIndex: i + j,
+        text: chunk.text,
+        source: chunk.filename,
+        chunkIndex: chunk.index,
       },
     }));
 
-    vectors.push(...batchVectors);
+    // 3. Upsert dans Pinecone par lots de batchSize
+    for (let k = 0; k < vectors.length; k += CONFIG.batchSize) {
+      const batchToUpsert = vectors.slice(k, k + CONFIG.batchSize);
+      await index.upsert({ records: batchToUpsert });
+      totalUpserted += batchToUpsert.length;
+      console.log(`  Upsert ${totalUpserted}/${chunks.length}...`);
+    }
   }
 
-  // Upsert dans Pinecone par lots
-  for (let i = 0; i < vectors.length; i += BATCH_SIZE) {
-    const batch = vectors.slice(i, i + BATCH_SIZE);
-    await index.upsert({records: batch});
-    console.log(`  Upsert ${Math.min(i + BATCH_SIZE, vectors.length)}/${vectors.length} vecteurs...`);
-  }
-
-  console.log(`  ✓ ${vectors.length} vecteurs indexés`);
-  return vectors.length;
+  return totalUpserted;
 }
 
-// --- Point d'entrée ---
+// === Point d'entrée ===
 
 async function main() {
   const INDEX_NAME = process.env.PINECONE_INDEX_NAME;
   const CORPUS_DIR = './corpus';
 
-  const files = readdirSync(CORPUS_DIR)
-    .filter(f => f.endsWith('.txt') || f.endsWith('.md'))
-    .map(f => join(CORPUS_DIR, f));
+  // 1. Tester chunking sur les cas tordus
+  console.log("🔍 Vérification du chunking...");
+  testChunking();
 
-  console.log(`Indexation de ${files.length} fichiers dans l'index "${INDEX_NAME}"`);
+  // 2. Charger le corpus
+  console.log("\n📚 Chargement du corpus...");
+  const corpus = await loadCorpus(CORPUS_DIR);
+  console.log(`  ${corpus.length} fichiers trouvés`);
 
-  let total = 0;
-  for (const file of files) {
-    try {
-      const count = await processFile(file, INDEX_NAME);
-      total += count;
-    } catch (err) {
-      console.error(`  ✗ Erreur sur ${file}: ${err.message}`);
-      // On continue avec les fichiers suivants
-    }
-  }
+  // 3. Chunking + construction du tableau de chunks
+  console.log("✂️  Chunking...");
+  let allChunks = [];
+  corpus.forEach(doc => {
+    const chunks = chunkWithOverlap(doc.text, CONFIG.chunkSize, CONFIG.overlap);
+    console.log(`  ${doc.filename}: ${chunks.length} chunks (${doc.text.length} caractères)`);
+    chunks.forEach((text, index) => {
+      allChunks.push({ filename: doc.filename, text, index });
+    });
+  });
+  console.log(`  Total: ${allChunks.length} chunks créés`);
 
-  console.log(`\nIndexation terminée. ${total} vecteurs au total.`);
+  // 4. Vectoriser et indexer
+  console.log(`\n🔌 Indexation dans "${INDEX_NAME}"...`);
+  const totalVectors = await embedAndIndex(allChunks, INDEX_NAME);
+  console.log(`✅ Indexation terminée : ${totalVectors} vecteurs dans l'index`);
 }
 
+// Exécution
 main().catch(console.error);
