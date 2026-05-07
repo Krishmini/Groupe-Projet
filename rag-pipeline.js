@@ -2,6 +2,7 @@
 import { retrieveContext }  from './retrieval.js';
 import {
   MISTRAL_API_KEY, CHAT_MODEL, MAX_CONTEXT_CHARS,
+  CONFIDENCE_THRESHOLD,
 } from './config.js';
 
 // ─── Tarifs Mistral (par modèle) ───────
@@ -172,6 +173,26 @@ RÈGLES ABSOLUES — aucune exception :
 6. Si la question est ambiguë, cite toutes les sources pertinentes et signale l'ambiguïté.
 7. Réponds en français, en texte brut, sans markdown. Synthétise au lieu de citer mot à mot.`;
 
+
+/**
+ * Évalue la confiance du retrieval à partir des scores des chunks.
+ *
+ * @param {Array<{ score: number }>} matches — chunks retournés par retrieveContext
+ * @returns {{ topScore: number, avgScore: number, sufficient: boolean }}
+ */
+export function computeConfidence(matches) {
+  if (!matches || matches.length === 0) {
+    return { topScore: 0, avgScore: 0, sufficient: false };
+  }
+
+  const scores   = matches.map(m => m.score);
+  const topScore = Math.max(...scores);
+  const avgScore = parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(4));
+  const sufficient = topScore >= CONFIDENCE_THRESHOLD;
+
+  return { topScore, avgScore, sufficient };
+}
+
 // ─── Formatage du contexte ─────────────
 // Chaque chunk : [Source N - nom_fichier]\n texte
 // Séparés par \n\n---\n\n
@@ -278,14 +299,12 @@ export async function ragQuery(question, options = {}) {
   const chunks = await retrieveContext(question, topK, scoreThreshold);
   const retrievalMs = Math.round(performance.now() - t0);
 
-  const scores   = chunks.map(c => c.score);
-  const topScore = scores.length > 0 ? Math.max(...scores) : 0;
-  const avgScore = scores.length > 0
-    ? parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(4))
-    : 0;
+  // ─── Confidence (J5 Phase 3) ────────
+  const confidence = computeConfidence(chunks);
 
   if (verbose) {
-    console.log(`[retrieve] topK=${chunks.length} retournés en ${retrievalMs}ms, top score ${topScore}, avg score ${avgScore}`);
+    console.log(`[retrieve] topK=${chunks.length} retournés en ${retrievalMs}ms, top score ${confidence.topScore}, avg score ${confidence.avgScore}`);
+    console.log(`[confidence] sufficient=${confidence.sufficient} (threshold=${CONFIDENCE_THRESHOLD})`);
     for (const c of chunks) {
       console.log(`  [${c.score}] ${c.source}, "${c.text.slice(0, 60)}..."`);
     }
@@ -318,8 +337,9 @@ export async function ragQuery(question, options = {}) {
   }
 
   const metrics = {
-    topScore,
-    avgScore,
+    topScore: confidence.topScore,
+    avgScore: confidence.avgScore,
+    confidence,
     retrievalMs,
     generationMs,
     promptTokens,

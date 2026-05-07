@@ -35,6 +35,10 @@ export const TOP_K             = 5;     // nombre de chunks retournés par Pinec
 export const SCORE_THRESHOLD   = 0.7;   // score cosine minimum — en dessous = non pertinent
 export const MAX_CONTEXT_CHARS = 4000;  // limite de contexte injectée dans le prompt (~1000 tokens)
 
+// ─── Confidence ─────────
+
+export const CONFIDENCE_THRESHOLD = parseFloat(process.env.CONFIDENCE_THRESHOLD || '0.75');
+
 // ─── Retry (429 / 503) ───────────────
 
 export const MAX_RETRIES   = 4;
