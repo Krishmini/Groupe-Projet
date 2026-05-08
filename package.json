@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "index": "node scripts/create-index.js",
-    "ask": "node -e \"import('./rag-pipeline.js').then(m => m.ask(process.argv[1]).then(r => { console.log('\\nRéponse:', r.answer); if(r.sources.length) console.log('Sources:', r.sources.join(', ')); }))\" --",
+    "ask": "node -e \"import('./rag-pipeline.js').then(m => m.ask(process.argv[1]).then(r => { console.log('\\nRéponse:', r.answer); if(r.sources.length) console.log('Sources:', r.sources.map(s => s.file || s).join(', ')); }))\" --",
     "eval": "node eval.js",
     "eval:verbose": "node eval.js --verbose",
     "cli": "node cli.js",
